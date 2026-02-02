@@ -21,6 +21,7 @@ export const CHECK_IDS = {
   OPENCODE_INSTALLATION: "opencode-installation",
   PLUGIN_REGISTRATION: "plugin-registration",
   CONFIG_VALIDATION: "config-validation",
+  MODEL_RESOLUTION: "model-resolution",
   AUTH_ANTHROPIC: "auth-anthropic",
   AUTH_OPENAI: "auth-openai",
   AUTH_GOOGLE: "auth-google",
@@ -31,6 +32,7 @@ export const CHECK_IDS = {
   LSP_SERVERS: "lsp-servers",
   MCP_BUILTIN: "mcp-builtin",
   MCP_USER: "mcp-user",
+  MCP_OAUTH_TOKENS: "mcp-oauth-tokens",
   VERSION_STATUS: "version-status",
 } as const
 
@@ -38,6 +40,7 @@ export const CHECK_NAMES: Record<string, string> = {
   [CHECK_IDS.OPENCODE_INSTALLATION]: "OpenCode Installation",
   [CHECK_IDS.PLUGIN_REGISTRATION]: "Plugin Registration",
   [CHECK_IDS.CONFIG_VALIDATION]: "Configuration Validity",
+  [CHECK_IDS.MODEL_RESOLUTION]: "Model Resolution",
   [CHECK_IDS.AUTH_ANTHROPIC]: "Anthropic (Claude) Auth",
   [CHECK_IDS.AUTH_OPENAI]: "OpenAI (ChatGPT) Auth",
   [CHECK_IDS.AUTH_GOOGLE]: "Google (Gemini) Auth",
@@ -48,6 +51,7 @@ export const CHECK_NAMES: Record<string, string> = {
   [CHECK_IDS.LSP_SERVERS]: "LSP Servers",
   [CHECK_IDS.MCP_BUILTIN]: "Built-in MCP Servers",
   [CHECK_IDS.MCP_USER]: "User MCP Configuration",
+  [CHECK_IDS.MCP_OAUTH_TOKENS]: "MCP OAuth Tokens",
   [CHECK_IDS.VERSION_STATUS]: "Version Status",
 } as const
 

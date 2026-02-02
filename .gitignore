@@ -5,6 +5,10 @@ node_modules/
 # Build output
 dist/
 
+# Platform binaries (built, not committed)
+packages/*/bin/oh-my-opencode
+packages/*/bin/oh-my-opencode.exe
+
 # IDE
 .idea/
 .vscode/
@@ -29,3 +33,4 @@ yarn.lock
 test-injection/
 notepad.md
 oauth-success.html
+*.bun-build

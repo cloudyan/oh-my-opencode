@@ -2,84 +2,79 @@
 
 ## OVERVIEW
 
-Custom tools extending agent capabilities: LSP integration (11 tools), AST-aware code search/replace, file operations with timeouts, background task management.
+20+ tools across 7 categories. Two patterns: Direct ToolDefinition (static) and Factory Function (context-dependent).
+
+**Categories**: LSP (6), AST-Grep (2), Search (2), Session (4), Agent delegation (2), Background (2), Skill (3)
 
 ## STRUCTURE
 
 ```
 tools/
-├── ast-grep/           # AST-aware code search/replace (25 languages)
-│   ├── cli.ts          # @ast-grep/cli subprocess
-│   ├── napi.ts         # @ast-grep/napi native binding (preferred)
-│   ├── constants.ts, types.ts, tools.ts, utils.ts
-├── background-task/    # Async agent task management
-├── call-omo-agent/     # Spawn explore/librarian agents
-├── glob/               # File pattern matching (timeout-safe)
-├── grep/               # Content search (timeout-safe)
-├── interactive-bash/   # Tmux session management
-├── look-at/            # Multimodal analysis (PDF, images)
-├── lsp/                # 11 LSP tools
-│   ├── client.ts       # LSP connection lifecycle (612 lines)
-│   ├── utils.ts        # LSP utilities (461 lines)
-│   ├── config.ts       # Server configurations
-│   ├── tools.ts        # Tool implementations (405 lines)
-│   └── types.ts
-├── session-manager/    # OpenCode session file management
-│   ├── constants.ts    # Storage paths, descriptions
-│   ├── types.ts        # Session data interfaces
-│   ├── storage.ts      # File I/O operations
-│   ├── utils.ts        # Formatting, filtering
-│   └── tools.ts        # Tool implementations
-├── sisyphus-task/      # Category-based task delegation (493 lines)
-├── skill/              # Skill loading and execution
-├── skill-mcp/          # Skill-embedded MCP invocation
-├── slashcommand/       # Slash command execution
-└── index.ts            # builtinTools export
+├── [tool-name]/
+│   ├── index.ts      # Barrel export
+│   ├── tools.ts      # ToolDefinition or factory
+│   ├── types.ts      # Zod schemas
+│   └── constants.ts  # Fixed values
+├── lsp/              # 6 tools: definition, references, symbols, diagnostics, rename (client.ts 540 lines)
+├── ast-grep/         # 2 tools: search, replace (25 languages)
+├── delegate-task/    # Category-based routing (1135 lines)
+├── session-manager/  # 4 tools: list, read, search, info
+├── grep/             # Custom grep with timeout (60s, 10MB)
+├── glob/             # 60s timeout, 100 file limit
+├── interactive-bash/ # Tmux session management
+├── look-at/          # Multimodal PDF/image
+├── skill/            # Skill execution
+├── skill-mcp/        # Skill MCP operations
+├── slashcommand/     # Slash command dispatch
+├── call-omo-agent/   # Direct agent invocation
+└── background-task/  # background_output, background_cancel
 ```
 
 ## TOOL CATEGORIES
 
-| Category | Tools | Purpose |
+| Category | Tools | Pattern |
 |----------|-------|---------|
-| LSP | lsp_hover, lsp_goto_definition, lsp_find_references, lsp_document_symbols, lsp_workspace_symbols, lsp_diagnostics, lsp_servers, lsp_prepare_rename, lsp_rename, lsp_code_actions, lsp_code_action_resolve | IDE-like code intelligence |
-| AST | ast_grep_search, ast_grep_replace | Pattern-based code search/replace |
-| File Search | grep, glob | Content and file pattern matching |
-| Session | session_list, session_read, session_search, session_info | OpenCode session file management |
-| Background | sisyphus_task, background_output, background_cancel | Async agent orchestration |
-| Multimodal | look_at | PDF/image analysis via Gemini |
-| Terminal | interactive_bash | Tmux session control |
-| Commands | slashcommand | Execute slash commands |
-| Skills | skill, skill_mcp | Load skills, invoke skill-embedded MCPs |
-| Agents | call_omo_agent | Spawn explore/librarian |
+| LSP | lsp_goto_definition, lsp_find_references, lsp_symbols, lsp_diagnostics, lsp_prepare_rename, lsp_rename | Direct |
+| Search | ast_grep_search, ast_grep_replace, grep, glob | Direct |
+| Session | session_list, session_read, session_search, session_info | Direct |
+| Agent | delegate_task, call_omo_agent | Factory |
+| Background | background_output, background_cancel | Factory |
+| System | interactive_bash, look_at | Mixed |
+| Skill | skill, skill_mcp, slashcommand | Factory |
 
-## HOW TO ADD A TOOL
+## HOW TO ADD
 
-1. Create directory: `src/tools/my-tool/`
-2. Create files:
-   - `constants.ts`: `TOOL_NAME`, `TOOL_DESCRIPTION`
-   - `types.ts`: Parameter/result interfaces
-   - `tools.ts`: Tool implementation (returns OpenCode tool object)
-   - `index.ts`: Barrel export
-   - `utils.ts`: Helpers (optional)
-3. Add to `builtinTools` in `src/tools/index.ts`
+1. Create `src/tools/[name]/` with standard files
+2. Use `tool()` from `@opencode-ai/plugin/tool`
+3. Export from `src/tools/index.ts`
+4. Static tools → `builtinTools`, Factory → separate export
 
-## LSP SPECIFICS
+## TOOL PATTERNS
 
-- **Client lifecycle**: Lazy init on first use, auto-shutdown on idle
-- **Config priority**: opencode.json > oh-my-opencode.json > defaults
-- **Supported servers**: typescript-language-server, pylsp, gopls, rust-analyzer, etc.
-- **Custom servers**: Add via `lsp` config in oh-my-opencode.json
+**Direct ToolDefinition**:
+```typescript
+export const grep: ToolDefinition = tool({
+  description: "...",
+  args: { pattern: tool.schema.string() },
+  execute: async (args) => result,
+})
+```
 
-## AST-GREP SPECIFICS
+**Factory Function** (context-dependent):
+```typescript
+export function createDelegateTask(ctx, manager): ToolDefinition {
+  return tool({ execute: async (args) => { /* uses ctx */ } })
+}
+```
 
-- **Meta-variables**: `$VAR` (single node), `$$$` (multiple nodes)
-- **Languages**: 25 supported (typescript, tsx, python, rust, go, etc.)
-- **Binding**: Prefers @ast-grep/napi (native), falls back to @ast-grep/cli
-- **Pattern must be valid AST**: `export async function $NAME($$$) { $$$ }` not fragments
+## NAMING
 
-## ANTI-PATTERNS (TOOLS)
+- **Tool names**: snake_case (`lsp_goto_definition`)
+- **Functions**: camelCase (`createDelegateTask`)
+- **Directories**: kebab-case (`delegate-task/`)
 
-- **No timeout**: Always use timeout for file operations (default 60s)
-- **Blocking main thread**: Use async/await, never sync file ops
-- **Ignoring LSP errors**: Gracefully handle server not found/crashed
-- **Raw subprocess for ast-grep**: Prefer napi binding for performance
+## ANTI-PATTERNS
+
+- **Sequential bash**: Use `&&` or delegation
+- **Raw file ops**: Never mkdir/touch in tool logic
+- **Sleep**: Use polling loops

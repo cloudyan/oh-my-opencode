@@ -9,6 +9,8 @@ export {
   SisyphusAgentConfigSchema,
   ExperimentalConfigSchema,
   RalphLoopConfigSchema,
+  TmuxConfigSchema,
+  TmuxLayoutSchema,
 } from "./schema"
 
 export type {
@@ -23,4 +25,8 @@ export type {
   ExperimentalConfig,
   DynamicContextPruningConfig,
   RalphLoopConfig,
+  TmuxConfig,
+  TmuxLayout,
+  SisyphusConfig,
+  SisyphusTasksConfig,
 } from "./schema"

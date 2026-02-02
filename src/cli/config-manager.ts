@@ -1,5 +1,4 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from "node:fs"
-import { join } from "node:path"
 import {
   parseJsonc,
   getOpenCodeConfigPaths,
@@ -7,6 +6,7 @@ import {
   type OpenCodeConfigPaths,
 } from "../shared"
 import type { ConfigMergeResult, DetectedConfig, InstallConfig } from "./types"
+import { generateModelConfig } from "./model-fallback"
 
 const OPENCODE_BINARIES = ["opencode", "opencode-desktop"] as const
 
@@ -109,6 +109,47 @@ export async function fetchLatestVersion(packageName: string): Promise<string | 
   }
 }
 
+interface NpmDistTags {
+  latest?: string
+  beta?: string
+  next?: string
+  [tag: string]: string | undefined
+}
+
+const NPM_FETCH_TIMEOUT_MS = 5000
+
+export async function fetchNpmDistTags(packageName: string): Promise<NpmDistTags | null> {
+  try {
+    const res = await fetch(`https://registry.npmjs.org/-/package/${packageName}/dist-tags`, {
+      signal: AbortSignal.timeout(NPM_FETCH_TIMEOUT_MS),
+    })
+    if (!res.ok) return null
+    const data = await res.json() as NpmDistTags
+    return data
+  } catch {
+    return null
+  }
+}
+
+const PACKAGE_NAME = "oh-my-opencode"
+
+const PRIORITIZED_TAGS = ["latest", "beta", "next"] as const
+
+export async function getPluginNameWithVersion(currentVersion: string): Promise<string> {
+  const distTags = await fetchNpmDistTags(PACKAGE_NAME)
+
+  if (distTags) {
+    const allTags = new Set([...PRIORITIZED_TAGS, ...Object.keys(distTags)])
+    for (const tag of allTags) {
+      if (distTags[tag] === currentVersion) {
+        return `${PACKAGE_NAME}@${tag}`
+      }
+    }
+  }
+
+  return `${PACKAGE_NAME}@${currentVersion}`
+}
+
 type ConfigFormat = "json" | "jsonc" | "none"
 
 interface OpenCodeConfig {
@@ -179,7 +220,7 @@ function ensureConfigDir(): void {
   }
 }
 
-export function addPluginToOpenCodeConfig(): ConfigMergeResult {
+export async function addPluginToOpenCodeConfig(currentVersion: string): Promise<ConfigMergeResult> {
   try {
     ensureConfigDir()
   } catch (err) {
@@ -187,11 +228,11 @@ export function addPluginToOpenCodeConfig(): ConfigMergeResult {
   }
 
   const { format, path } = detectConfigFormat()
-  const pluginName = "oh-my-opencode"
+  const pluginEntry = await getPluginNameWithVersion(currentVersion)
 
   try {
     if (format === "none") {
-      const config: OpenCodeConfig = { plugin: [pluginName] }
+      const config: OpenCodeConfig = { plugin: [pluginEntry] }
       writeFileSync(path, JSON.stringify(config, null, 2) + "\n")
       return { success: true, configPath: path }
     }
@@ -203,11 +244,18 @@ export function addPluginToOpenCodeConfig(): ConfigMergeResult {
 
     const config = parseResult.config
     const plugins = config.plugin ?? []
-    if (plugins.some((p) => p.startsWith(pluginName))) {
-      return { success: true, configPath: path }
+    const existingIndex = plugins.findIndex((p) => p === PACKAGE_NAME || p.startsWith(`${PACKAGE_NAME}@`))
+
+    if (existingIndex !== -1) {
+      if (plugins[existingIndex] === pluginEntry) {
+        return { success: true, configPath: path }
+      }
+      plugins[existingIndex] = pluginEntry
+    } else {
+      plugins.push(pluginEntry)
     }
 
-    config.plugin = [...plugins, pluginName]
+    config.plugin = plugins
 
     if (format === "jsonc") {
       const content = readFileSync(path, "utf-8")
@@ -215,14 +263,11 @@ export function addPluginToOpenCodeConfig(): ConfigMergeResult {
       const match = content.match(pluginArrayRegex)
 
       if (match) {
-        const arrayContent = match[1].trim()
-        const newArrayContent = arrayContent
-          ? `${arrayContent},\n    "${pluginName}"`
-          : `"${pluginName}"`
-        const newContent = content.replace(pluginArrayRegex, `"plugin": [\n    ${newArrayContent}\n  ]`)
+        const formattedPlugins = plugins.map((p) => `"${p}"`).join(",\n    ")
+        const newContent = content.replace(pluginArrayRegex, `"plugin": [\n    ${formattedPlugins}\n  ]`)
         writeFileSync(path, newContent)
       } else {
-        const newContent = content.replace(/^(\s*\{)/, `$1\n  "plugin": ["${pluginName}"],`)
+        const newContent = content.replace(/^(\s*\{)/, `$1\n  "plugin": ["${pluginEntry}"],`)
         writeFileSync(path, newContent)
       }
     } else {
@@ -263,63 +308,7 @@ function deepMerge<T extends Record<string, unknown>>(target: T, source: Partial
 }
 
 export function generateOmoConfig(installConfig: InstallConfig): Record<string, unknown> {
-  const config: Record<string, unknown> = {
-    $schema: "https://raw.githubusercontent.com/code-yeongyu/oh-my-opencode/master/assets/oh-my-opencode.schema.json",
-  }
-
-  if (installConfig.hasGemini) {
-    config.google_auth = false
-  }
-
-  const agents: Record<string, Record<string, unknown>> = {}
-
-  if (!installConfig.hasClaude) {
-    agents["Sisyphus"] = { model: "opencode/glm-4.7-free" }
-  }
-
-  agents["librarian"] = { model: "opencode/glm-4.7-free" }
-
-  // Gemini models use `antigravity-` prefix for explicit Antigravity quota routing
-  // @see ANTIGRAVITY_PROVIDER_CONFIG comments for rationale
-  if (installConfig.hasGemini) {
-    agents["explore"] = { model: "google/antigravity-gemini-3-flash" }
-  } else if (installConfig.hasClaude && installConfig.isMax20) {
-    agents["explore"] = { model: "anthropic/claude-haiku-4-5" }
-  } else {
-    agents["explore"] = { model: "opencode/glm-4.7-free" }
-  }
-
-  if (!installConfig.hasChatGPT) {
-    agents["oracle"] = {
-      model: installConfig.hasClaude ? "anthropic/claude-opus-4-5" : "opencode/glm-4.7-free",
-    }
-  }
-
-  if (installConfig.hasGemini) {
-    agents["frontend-ui-ux-engineer"] = { model: "google/antigravity-gemini-3-pro-high" }
-    agents["document-writer"] = { model: "google/antigravity-gemini-3-flash" }
-    agents["multimodal-looker"] = { model: "google/antigravity-gemini-3-flash" }
-  } else {
-    const fallbackModel = installConfig.hasClaude ? "anthropic/claude-opus-4-5" : "opencode/glm-4.7-free"
-    agents["frontend-ui-ux-engineer"] = { model: fallbackModel }
-    agents["document-writer"] = { model: fallbackModel }
-    agents["multimodal-looker"] = { model: fallbackModel }
-  }
-
-  if (Object.keys(agents).length > 0) {
-    config.agents = agents
-  }
-
-  // Categories: override model for Antigravity auth (gemini-3-pro-preview → gemini-3-pro-high)
-  if (installConfig.hasGemini) {
-    config.categories = {
-      "visual-engineering": { model: "google/gemini-3-pro-high" },
-      artistry: { model: "google/gemini-3-pro-high" },
-      writing: { model: "google/gemini-3-flash-high" },
-    }
-  }
-
-  return config
+  return generateModelConfig(installConfig)
 }
 
 export function writeOmoConfig(installConfig: InstallConfig): ConfigMergeResult {
@@ -350,7 +339,6 @@ export function writeOmoConfig(installConfig: InstallConfig): ConfigMergeResult 
           return { success: true, configPath: omoConfigPath }
         }
 
-        delete existing.agents
         const merged = deepMerge(existing, newConfig)
         writeFileSync(omoConfigPath, JSON.stringify(merged, null, 2) + "\n")
       } catch (parseErr) {
@@ -436,11 +424,7 @@ export async function addAuthPlugins(config: InstallConfig): Promise<ConfigMerge
       }
     }
 
-    if (config.hasChatGPT) {
-      if (!plugins.some((p) => p.startsWith("opencode-openai-codex-auth"))) {
-        plugins.push("opencode-openai-codex-auth")
-      }
-    }
+
 
     const newConfig = { ...(existingConfig ?? {}), plugin: plugins }
     writeFileSync(path, JSON.stringify(newConfig, null, 2) + "\n")
@@ -513,91 +497,67 @@ export async function runBunInstallWithDetails(): Promise<BunInstallResult> {
  *
  * IMPORTANT: Model names MUST use `antigravity-` prefix for stability.
  *
- * The opencode-antigravity-auth plugin supports two naming conventions:
- * - `antigravity-gemini-3-pro-high` (RECOMMENDED, explicit Antigravity quota routing)
- * - `gemini-3-pro-high` (LEGACY, backward compatible but may break in future)
+ * Since opencode-antigravity-auth v1.3.0, models use a variant system:
+ * - `antigravity-gemini-3-pro` with variants: low, high
+ * - `antigravity-gemini-3-flash` with variants: minimal, low, medium, high
  *
- * Legacy names rely on Gemini CLI using `-preview` suffix for disambiguation.
- * If Google removes `-preview`, legacy names may route to wrong quota.
+ * Legacy tier-suffixed names (e.g., `antigravity-gemini-3-pro-high`) still work
+ * but variants are the recommended approach.
  *
- * @see https://github.com/NoeFabris/opencode-antigravity-auth#migration-guide-v127
+ * @see https://github.com/NoeFabris/opencode-antigravity-auth#models
  */
 export const ANTIGRAVITY_PROVIDER_CONFIG = {
   google: {
     name: "Google",
     models: {
-      "antigravity-gemini-3-pro-high": {
-        name: "Gemini 3 Pro High (Antigravity)",
-        thinking: true,
-        attachment: true,
+      "antigravity-gemini-3-pro": {
+        name: "Gemini 3 Pro (Antigravity)",
         limit: { context: 1048576, output: 65535 },
         modalities: { input: ["text", "image", "pdf"], output: ["text"] },
-      },
-      "antigravity-gemini-3-pro-low": {
-        name: "Gemini 3 Pro Low (Antigravity)",
-        thinking: true,
-        attachment: true,
-        limit: { context: 1048576, output: 65535 },
-        modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+        variants: {
+          low: { thinkingLevel: "low" },
+          high: { thinkingLevel: "high" },
+        },
       },
       "antigravity-gemini-3-flash": {
         name: "Gemini 3 Flash (Antigravity)",
-        attachment: true,
         limit: { context: 1048576, output: 65536 },
         modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+        variants: {
+          minimal: { thinkingLevel: "minimal" },
+          low: { thinkingLevel: "low" },
+          medium: { thinkingLevel: "medium" },
+          high: { thinkingLevel: "high" },
+        },
+      },
+      "antigravity-claude-sonnet-4-5": {
+        name: "Claude Sonnet 4.5 (Antigravity)",
+        limit: { context: 200000, output: 64000 },
+        modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+      },
+      "antigravity-claude-sonnet-4-5-thinking": {
+        name: "Claude Sonnet 4.5 Thinking (Antigravity)",
+        limit: { context: 200000, output: 64000 },
+        modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+        variants: {
+          low: { thinkingConfig: { thinkingBudget: 8192 } },
+          max: { thinkingConfig: { thinkingBudget: 32768 } },
+        },
+      },
+      "antigravity-claude-opus-4-5-thinking": {
+        name: "Claude Opus 4.5 Thinking (Antigravity)",
+        limit: { context: 200000, output: 64000 },
+        modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+        variants: {
+          low: { thinkingConfig: { thinkingBudget: 8192 } },
+          max: { thinkingConfig: { thinkingBudget: 32768 } },
+        },
       },
     },
   },
 }
 
-const CODEX_PROVIDER_CONFIG = {
-  openai: {
-    name: "OpenAI",
-    options: {
-      reasoningEffort: "medium",
-      reasoningSummary: "auto",
-      textVerbosity: "medium",
-      include: ["reasoning.encrypted_content"],
-      store: false,
-    },
-    models: {
-      "gpt-5.2": {
-        name: "GPT 5.2 (OAuth)",
-        limit: { context: 272000, output: 128000 },
-        modalities: { input: ["text", "image"], output: ["text"] },
-        variants: {
-          none: { reasoningEffort: "none", reasoningSummary: "auto", textVerbosity: "medium" },
-          low: { reasoningEffort: "low", reasoningSummary: "auto", textVerbosity: "medium" },
-          medium: { reasoningEffort: "medium", reasoningSummary: "auto", textVerbosity: "medium" },
-          high: { reasoningEffort: "high", reasoningSummary: "detailed", textVerbosity: "medium" },
-          xhigh: { reasoningEffort: "xhigh", reasoningSummary: "detailed", textVerbosity: "medium" },
-        },
-      },
-      "gpt-5.2-codex": {
-        name: "GPT 5.2 Codex (OAuth)",
-        limit: { context: 272000, output: 128000 },
-        modalities: { input: ["text", "image"], output: ["text"] },
-        variants: {
-          low: { reasoningEffort: "low", reasoningSummary: "auto", textVerbosity: "medium" },
-          medium: { reasoningEffort: "medium", reasoningSummary: "auto", textVerbosity: "medium" },
-          high: { reasoningEffort: "high", reasoningSummary: "detailed", textVerbosity: "medium" },
-          xhigh: { reasoningEffort: "xhigh", reasoningSummary: "detailed", textVerbosity: "medium" },
-        },
-      },
-      "gpt-5.1-codex-max": {
-        name: "GPT 5.1 Codex Max (OAuth)",
-        limit: { context: 272000, output: 128000 },
-        modalities: { input: ["text", "image"], output: ["text"] },
-        variants: {
-          low: { reasoningEffort: "low", reasoningSummary: "detailed", textVerbosity: "medium" },
-          medium: { reasoningEffort: "medium", reasoningSummary: "detailed", textVerbosity: "medium" },
-          high: { reasoningEffort: "high", reasoningSummary: "detailed", textVerbosity: "medium" },
-          xhigh: { reasoningEffort: "xhigh", reasoningSummary: "detailed", textVerbosity: "medium" },
-        },
-      },
-    },
-  },
-}
+
 
 export function addProviderConfig(config: InstallConfig): ConfigMergeResult {
   try {
@@ -627,10 +587,6 @@ export function addProviderConfig(config: InstallConfig): ConfigMergeResult {
       providers.google = ANTIGRAVITY_PROVIDER_CONFIG.google
     }
 
-    if (config.hasChatGPT) {
-      providers.openai = CODEX_PROVIDER_CONFIG.openai
-    }
-
     if (Object.keys(providers).length > 0) {
       newConfig.provider = providers
     }
@@ -642,9 +598,29 @@ export function addProviderConfig(config: InstallConfig): ConfigMergeResult {
   }
 }
 
-interface OmoConfigData {
-  google_auth?: boolean
-  agents?: Record<string, { model?: string }>
+function detectProvidersFromOmoConfig(): { hasOpenAI: boolean; hasOpencodeZen: boolean; hasZaiCodingPlan: boolean; hasKimiForCoding: boolean } {
+  const omoConfigPath = getOmoConfig()
+  if (!existsSync(omoConfigPath)) {
+    return { hasOpenAI: true, hasOpencodeZen: true, hasZaiCodingPlan: false, hasKimiForCoding: false }
+  }
+
+  try {
+    const content = readFileSync(omoConfigPath, "utf-8")
+    const omoConfig = parseJsonc<Record<string, unknown>>(content)
+    if (!omoConfig || typeof omoConfig !== "object") {
+      return { hasOpenAI: true, hasOpencodeZen: true, hasZaiCodingPlan: false, hasKimiForCoding: false }
+    }
+
+    const configStr = JSON.stringify(omoConfig)
+    const hasOpenAI = configStr.includes('"openai/')
+    const hasOpencodeZen = configStr.includes('"opencode/')
+    const hasZaiCodingPlan = configStr.includes('"zai-coding-plan/')
+    const hasKimiForCoding = configStr.includes('"kimi-for-coding/')
+
+    return { hasOpenAI, hasOpencodeZen, hasZaiCodingPlan, hasKimiForCoding }
+  } catch {
+    return { hasOpenAI: true, hasOpencodeZen: true, hasZaiCodingPlan: false, hasKimiForCoding: false }
+  }
 }
 
 export function detectCurrentConfig(): DetectedConfig {
@@ -652,8 +628,12 @@ export function detectCurrentConfig(): DetectedConfig {
     isInstalled: false,
     hasClaude: true,
     isMax20: true,
-    hasChatGPT: true,
+    hasOpenAI: true,
     hasGemini: false,
+    hasCopilot: false,
+    hasOpencodeZen: true,
+    hasZaiCodingPlan: false,
+    hasKimiForCoding: false,
   }
 
   const { format, path } = detectConfigFormat()
@@ -674,52 +654,14 @@ export function detectCurrentConfig(): DetectedConfig {
     return result
   }
 
+  // Gemini auth plugin detection still works via plugin presence
   result.hasGemini = plugins.some((p) => p.startsWith("opencode-antigravity-auth"))
-  result.hasChatGPT = plugins.some((p) => p.startsWith("opencode-openai-codex-auth"))
 
-  const omoConfigPath = getOmoConfig()
-  if (!existsSync(omoConfigPath)) {
-    return result
-  }
-
-  try {
-    const stat = statSync(omoConfigPath)
-    if (stat.size === 0) {
-      return result
-    }
-
-    const content = readFileSync(omoConfigPath, "utf-8")
-    if (isEmptyOrWhitespace(content)) {
-      return result
-    }
-
-    const omoConfig = parseJsonc<OmoConfigData>(content)
-    if (!omoConfig || typeof omoConfig !== "object") {
-      return result
-    }
-
-    const agents = omoConfig.agents ?? {}
-
-    if (agents["Sisyphus"]?.model === "opencode/glm-4.7-free") {
-      result.hasClaude = false
-      result.isMax20 = false
-    } else if (agents["librarian"]?.model === "opencode/glm-4.7-free") {
-      result.hasClaude = true
-      result.isMax20 = false
-    }
-
-    if (agents["oracle"]?.model?.startsWith("anthropic/")) {
-      result.hasChatGPT = false
-    } else if (agents["oracle"]?.model === "opencode/glm-4.7-free") {
-      result.hasChatGPT = false
-    }
-
-    if (omoConfig.google_auth === false) {
-      result.hasGemini = plugins.some((p) => p.startsWith("opencode-antigravity-auth"))
-    }
-  } catch {
-    /* intentionally empty - malformed omo config returns defaults from opencode config detection */
-  }
+  const { hasOpenAI, hasOpencodeZen, hasZaiCodingPlan, hasKimiForCoding } = detectProvidersFromOmoConfig()
+  result.hasOpenAI = hasOpenAI
+  result.hasOpencodeZen = hasOpencodeZen
+  result.hasZaiCodingPlan = hasZaiCodingPlan
+  result.hasKimiForCoding = hasKimiForCoding
 
   return result
 }

@@ -1,13 +1,16 @@
 import type { PluginInput } from "@opencode-ai/plugin"
 import { detectKeywordsWithType, extractPromptText, removeCodeBlocks } from "./detector"
+import { isPlannerAgent } from "./constants"
 import { log } from "../../shared"
-import { getMainSessionID } from "../../features/claude-code-session-state"
+import { hasSystemReminder, isSystemDirective, removeSystemReminders } from "../../shared/system-directive"
+import { getMainSessionID, getSessionAgent, subagentSessions } from "../../features/claude-code-session-state"
+import type { ContextCollector } from "../../features/context-injector"
 
 export * from "./detector"
 export * from "./constants"
 export * from "./types"
 
-export function createKeywordDetectorHook(ctx: PluginInput) {
+export function createKeywordDetectorHook(ctx: PluginInput, collector?: ContextCollector) {
   return {
     "chat.message": async (
       input: {
@@ -22,14 +25,34 @@ export function createKeywordDetectorHook(ctx: PluginInput) {
       }
     ): Promise<void> => {
       const promptText = extractPromptText(output.parts)
-      let detectedKeywords = detectKeywordsWithType(removeCodeBlocks(promptText), input.agent)
+
+      if (isSystemDirective(promptText)) {
+        log(`[keyword-detector] Skipping system directive message`, { sessionID: input.sessionID })
+        return
+      }
+
+      const currentAgent = getSessionAgent(input.sessionID) ?? input.agent
+
+      // Remove system-reminder content to prevent automated system messages from triggering mode keywords
+      const cleanText = removeSystemReminders(promptText)
+      const modelID = input.model?.modelID
+      let detectedKeywords = detectKeywordsWithType(removeCodeBlocks(cleanText), currentAgent, modelID)
+
+      if (isPlannerAgent(currentAgent)) {
+        detectedKeywords = detectedKeywords.filter((k) => k.type !== "ultrawork")
+      }
 
       if (detectedKeywords.length === 0) {
         return
       }
 
-      // Only ultrawork keywords work in non-main sessions
-      // Other keywords (search, analyze, etc.) only work in main sessions
+      // Skip keyword detection for background task sessions to prevent mode injection
+      // (e.g., [analyze-mode]) which incorrectly triggers Prometheus restrictions
+      const isBackgroundTaskSession = subagentSessions.has(input.sessionID)
+      if (isBackgroundTaskSession) {
+        return
+      }
+
       const mainSessionID = getMainSessionID()
       const isNonMainSession = mainSessionID && input.sessionID !== mainSessionID
 
@@ -48,7 +71,9 @@ export function createKeywordDetectorHook(ctx: PluginInput) {
       if (hasUltrawork) {
         log(`[keyword-detector] Ultrawork mode activated`, { sessionID: input.sessionID })
 
-        output.message.variant = "max"
+        if (output.message.variant === undefined) {
+          output.message.variant = "max"
+        }
 
         ctx.client.tui
           .showToast({
@@ -63,6 +88,17 @@ export function createKeywordDetectorHook(ctx: PluginInput) {
             log(`[keyword-detector] Failed to show toast`, { error: err, sessionID: input.sessionID })
           )
       }
+
+      const textPartIndex = output.parts.findIndex((p) => p.type === "text" && p.text !== undefined)
+      if (textPartIndex === -1) {
+        log(`[keyword-detector] No text part found, skipping injection`, { sessionID: input.sessionID })
+        return
+      }
+
+      const allMessages = detectedKeywords.map((k) => k.message).join("\n\n")
+      const originalText = output.parts[textPartIndex].text ?? ""
+
+      output.parts[textPartIndex].text = `${allMessages}\n\n---\n\n${originalText}`
 
       log(`[keyword-detector] Detected ${detectedKeywords.length} keywords`, {
         sessionID: input.sessionID,

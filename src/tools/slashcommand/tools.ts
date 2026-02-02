@@ -1,11 +1,12 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin"
 import { existsSync, readdirSync, readFileSync } from "fs"
 import { join, basename, dirname } from "path"
-import { parseFrontmatter, resolveCommandsInText, resolveFileReferencesInText, sanitizeModelField } from "../../shared"
+import { parseFrontmatter, resolveCommandsInText, resolveFileReferencesInText, sanitizeModelField, getOpenCodeConfigDir } from "../../shared"
 import type { CommandFrontmatter } from "../../features/claude-code-command-loader/types"
 import { isMarkdownFile } from "../../shared/file-utils"
 import { getClaudeConfigDir } from "../../shared"
 import { discoverAllSkills, type LoadedSkill } from "../../features/opencode-skill-loader"
+import { loadBuiltinCommands } from "../../features/builtin-commands"
 import type { CommandScope, CommandMetadata, CommandInfo, SlashcommandToolOptions } from "./types"
 
 function discoverCommandsFromDir(commandsDir: string, scope: CommandScope): CommandInfo[] {
@@ -52,10 +53,10 @@ function discoverCommandsFromDir(commandsDir: string, scope: CommandScope): Comm
 }
 
 export function discoverCommandsSync(): CommandInfo[] {
-  const { homedir } = require("os")
+  const configDir = getOpenCodeConfigDir({ binary: "opencode" })
   const userCommandsDir = join(getClaudeConfigDir(), "commands")
   const projectCommandsDir = join(process.cwd(), ".claude", "commands")
-  const opencodeGlobalDir = join(homedir(), ".config", "opencode", "command")
+  const opencodeGlobalDir = join(configDir, "command")
   const opencodeProjectDir = join(process.cwd(), ".opencode", "command")
 
   const userCommands = discoverCommandsFromDir(userCommandsDir, "user")
@@ -63,7 +64,22 @@ export function discoverCommandsSync(): CommandInfo[] {
   const projectCommands = discoverCommandsFromDir(projectCommandsDir, "project")
   const opencodeProjectCommands = discoverCommandsFromDir(opencodeProjectDir, "opencode-project")
 
-  return [...opencodeProjectCommands, ...projectCommands, ...opencodeGlobalCommands, ...userCommands]
+  const builtinCommandsMap = loadBuiltinCommands()
+  const builtinCommands: CommandInfo[] = Object.values(builtinCommandsMap).map(cmd => ({
+    name: cmd.name,
+    metadata: {
+      name: cmd.name,
+      description: cmd.description || "",
+      argumentHint: cmd.argumentHint,
+      model: cmd.model,
+      agent: cmd.agent,
+      subtask: cmd.subtask
+    },
+    content: cmd.template,
+    scope: "builtin"
+  }))
+
+  return [...builtinCommands, ...opencodeProjectCommands, ...projectCommands, ...opencodeGlobalCommands, ...userCommands]
 }
 
 function skillToCommandInfo(skill: LoadedSkill): CommandInfo {
@@ -84,7 +100,7 @@ function skillToCommandInfo(skill: LoadedSkill): CommandInfo {
   }
 }
 
-async function formatLoadedCommand(cmd: CommandInfo): Promise<string> {
+async function formatLoadedCommand(cmd: CommandInfo, userMessage?: string): Promise<string> {
   const sections: string[] = []
 
   sections.push(`# /${cmd.name} Command\n`)
@@ -95,6 +111,10 @@ async function formatLoadedCommand(cmd: CommandInfo): Promise<string> {
 
   if (cmd.metadata.argumentHint) {
     sections.push(`**Usage**: /${cmd.name} ${cmd.metadata.argumentHint}\n`)
+  }
+
+  if (userMessage) {
+    sections.push(`**Arguments**: ${userMessage}\n`)
   }
 
   if (cmd.metadata.model) {
@@ -121,7 +141,14 @@ async function formatLoadedCommand(cmd: CommandInfo): Promise<string> {
   const commandDir = cmd.path ? dirname(cmd.path) : process.cwd()
   const withFileRefs = await resolveFileReferencesInText(content, commandDir)
   const resolvedContent = await resolveCommandsInText(withFileRefs)
-  sections.push(resolvedContent.trim())
+  
+  // Substitute user_message into content if provided
+  let finalContent = resolvedContent.trim()
+  if (userMessage) {
+    finalContent = finalContent.replace(/\$\{user_message\}/g, userMessage)
+  }
+  
+  sections.push(finalContent)
 
   return sections.join("\n")
 }
@@ -144,10 +171,15 @@ function formatCommandList(items: CommandInfo[]): string {
   return lines.join("\n")
 }
 
-const TOOL_DESCRIPTION_PREFIX = `Load a skill to get detailed instructions for a specific task.
+const TOOL_DESCRIPTION_PREFIX = `Load a skill or execute a command to get detailed instructions for a specific task.
 
-Skills provide specialized knowledge and step-by-step guidance.
-Use this when a task matches an available skill's description.
+Skills and commands provide specialized knowledge and step-by-step guidance.
+Use this when a task matches an available skill's or command's description.
+
+**How to use:**
+- Call with command name only: command='publish'
+- Call with command and arguments: command='publish' user_message='patch'
+- The tool will return detailed instructions for the command with your arguments substituted.
 `
 
 function buildDescriptionFromItems(items: CommandInfo[]): string {
@@ -194,8 +226,12 @@ export function createSlashcommandTool(options: SlashcommandToolOptions = {}): T
     return cachedDescription
   }
 
-  // Pre-warm the cache immediately
-  buildDescription()
+  if (options.commands !== undefined && options.skills !== undefined) {
+    const allItems = [...options.commands, ...options.skills.map(skillToCommandInfo)]
+    cachedDescription = buildDescriptionFromItems(allItems)
+  } else {
+    buildDescription()
+  }
 
   return tool({
     get description() {
@@ -206,7 +242,13 @@ export function createSlashcommandTool(options: SlashcommandToolOptions = {}): T
       command: tool.schema
         .string()
         .describe(
-          "The slash command to execute (without the leading slash). E.g., 'commit', 'plan', 'execute'."
+          "The slash command name (without leading slash). E.g., 'publish', 'commit', 'plan'"
+        ),
+      user_message: tool.schema
+        .string()
+        .optional()
+        .describe(
+          "Optional arguments or context to pass to the command. E.g., for '/publish patch', command='publish' user_message='patch'"
         ),
     },
 
@@ -224,7 +266,7 @@ export function createSlashcommandTool(options: SlashcommandToolOptions = {}): T
       )
 
       if (exactMatch) {
-        return await formatLoadedCommand(exactMatch)
+        return await formatLoadedCommand(exactMatch, args.user_message)
       }
 
       const partialMatches = allItems.filter((cmd) =>

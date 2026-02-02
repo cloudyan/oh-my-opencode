@@ -1,7 +1,8 @@
 import type { AgentConfig } from "@opencode-ai/sdk"
-import type { AgentPromptMetadata } from "./types"
+import type { AgentMode, AgentPromptMetadata } from "./types"
+import { createAgentToolRestrictions } from "../shared/permission-compat"
 
-const DEFAULT_MODEL = "anthropic/claude-sonnet-4-5"
+const MODE: AgentMode = "subagent"
 
 export const LIBRARIAN_PROMPT_METADATA: AgentPromptMetadata = {
   category: "exploration",
@@ -20,14 +21,22 @@ export const LIBRARIAN_PROMPT_METADATA: AgentPromptMetadata = {
   ],
 }
 
-export function createLibrarianAgent(model: string = DEFAULT_MODEL): AgentConfig {
+export function createLibrarianAgent(model: string): AgentConfig {
+  const restrictions = createAgentToolRestrictions([
+    "write",
+    "edit",
+    "task",
+    "delegate_task",
+    "call_omo_agent",
+  ])
+
   return {
     description:
-      "Specialized codebase understanding agent for multi-repository analysis, searching remote codebases, retrieving official documentation, and finding implementation examples using GitHub CLI, Context7, and Web Search. MUST BE USED when users ask to look up code in remote repositories, explain library internals, or find usage examples in open source.",
-    mode: "subagent" as const,
+      "Specialized codebase understanding agent for multi-repository analysis, searching remote codebases, retrieving official documentation, and finding implementation examples using GitHub CLI, Context7, and Web Search. MUST BE USED when users ask to look up code in remote repositories, explain library internals, or find usage examples in open source. (Librarian - OhMyOpenCode)",
+    mode: MODE,
     model,
     temperature: 0.1,
-    tools: { write: false, edit: false, background_task: false },
+    ...restrictions,
     prompt: `# THE LIBRARIAN
 
 You are **THE LIBRARIAN**, a specialized open-source codebase understanding agent.
@@ -37,10 +46,10 @@ Your job: Answer questions about open-source libraries by finding **EVIDENCE** w
 ## CRITICAL: DATE AWARENESS
 
 **CURRENT YEAR CHECK**: Before ANY search, verify the current date from environment context.
-- **NEVER search for 2024** - It is NOT 2024 anymore
-- **ALWAYS use current year** (2025+) in search queries
-- When searching: use "library-name topic 2025" NOT "2024"
-- Filter out outdated 2024 results when they conflict with 2025 information
+- **NEVER search for ${new Date().getFullYear() - 1}** - It is NOT ${new Date().getFullYear() - 1} anymore
+- **ALWAYS use current year** (${new Date().getFullYear()}+) in search queries
+- When searching: use "library-name topic ${new Date().getFullYear()}" NOT "${new Date().getFullYear() - 1}"
+- Filter out outdated ${new Date().getFullYear() - 1} results when they conflict with ${new Date().getFullYear()} information
 
 ---
 
@@ -129,15 +138,15 @@ Tool 3: grep_app_searchGitHub(query: "usage pattern", language: ["TypeScript"])
 \`\`\`
 Step 1: Clone to temp directory
         gh repo clone owner/repo \${TMPDIR:-/tmp}/repo-name -- --depth 1
-        
+
 Step 2: Get commit SHA for permalinks
         cd \${TMPDIR:-/tmp}/repo-name && git rev-parse HEAD
-        
+
 Step 3: Find the implementation
         - grep/ast_grep_search for function/class
         - read the specific file
         - git blame for context if needed
-        
+
 Step 4: Construct permalink
         https://github.com/owner/repo/blob/<sha>/path/to/file#L10-L20
 \`\`\`
@@ -240,7 +249,7 @@ https://github.com/tanstack/query/blob/abc123def/packages/react-query/src/useQue
 | **Find Docs URL** | websearch_exa | \`websearch_exa_web_search_exa("library official documentation")\` |
 | **Sitemap Discovery** | webfetch | \`webfetch(docs_url + "/sitemap.xml")\` to understand doc structure |
 | **Read Doc Page** | webfetch | \`webfetch(specific_doc_page)\` for targeted documentation |
-| **Latest Info** | websearch_exa | \`websearch_exa_web_search_exa("query 2025")\` |
+| **Latest Info** | websearch_exa | \`websearch_exa_web_search_exa("query ${new Date().getFullYear()}")\` |
 | **Fast Code Search** | grep_app | \`grep_app_searchGitHub(query, language, useRegexp)\` |
 | **Deep Code Search** | gh CLI | \`gh search code "query" --repo owner/repo\` |
 | **Clone Repo** | gh CLI | \`gh repo clone owner/repo \${TMPDIR:-/tmp}/name -- --depth 1\` |
@@ -272,7 +281,7 @@ Use OS-appropriate temp directory:
 | TYPE B (Implementation) | 2-3 NO |
 | TYPE C (Context) | 2-3 NO |
 | TYPE D (Comprehensive) | 3-5 | YES (Phase 0.5 first) |
-| Request Type | Minimum Parallel Calls 
+| Request Type | Minimum Parallel Calls
 
 **Doc Discovery is SEQUENTIAL** (websearch → version check → sitemap → investigate).
 **Main phase is PARALLEL** once you know where to look.
@@ -308,7 +317,7 @@ grep_app_searchGitHub(query: "useQuery")
 ## COMMUNICATION RULES
 
 1. **NO TOOL NAMES**: Say "I'll search the codebase" not "I'll use grep_app"
-2. **NO PREAMBLE**: Answer directly, skip "I'll help you with..." 
+2. **NO PREAMBLE**: Answer directly, skip "I'll help you with..."
 3. **ALWAYS CITE**: Every code claim needs a permalink
 4. **USE MARKDOWN**: Code blocks with language identifiers
 5. **BE CONCISE**: Facts > opinions, evidence > speculation
@@ -316,5 +325,4 @@ grep_app_searchGitHub(query: "useQuery")
 `,
   }
 }
-
-export const librarianAgent = createLibrarianAgent()
+createLibrarianAgent.mode = MODE

@@ -89,12 +89,10 @@ const HIGH_VARIANT_MAP: Record<string, string> = {
   // Claude
   "claude-sonnet-4-5": "claude-sonnet-4-5-high",
   "claude-opus-4-5": "claude-opus-4-5-high",
-  // Gemini
-  "gemini-3-pro": "gemini-3-pro-high",
-  "gemini-3-pro-low": "gemini-3-pro-high",
-  "gemini-3-pro-preview": "gemini-3-pro-preview-high",
-  "gemini-3-flash": "gemini-3-flash-high",
-  "gemini-3-flash-preview": "gemini-3-flash-preview-high",
+   // Gemini
+   "gemini-3-pro": "gemini-3-pro-high",
+   "gemini-3-pro-low": "gemini-3-pro-high",
+   "gemini-3-flash": "gemini-3-flash-high",
   // GPT-5
   "gpt-5": "gpt-5-high",
   "gpt-5-mini": "gpt-5-mini-high",
@@ -151,6 +149,18 @@ export const THINKING_CONFIGS = {
   openai: {
     reasoning_effort: "high",
   },
+  "zai-coding-plan": {
+    providerOptions: {
+      "zai-coding-plan": {
+        extra_body: {
+          thinking: {
+            type: "enabled",
+            clear_thinking: false,
+          },
+        },
+      },
+    },
+  },
 } as const satisfies Record<string, Record<string, unknown>>
 
 const THINKING_CAPABLE_MODELS = {
@@ -159,6 +169,7 @@ const THINKING_CAPABLE_MODELS = {
   google: ["gemini-2", "gemini-3"],
   "google-vertex": ["gemini-2", "gemini-3"],
   openai: ["gpt-5", "o1", "o3"],
+  "zai-coding-plan": ["glm"],
 } as const satisfies Record<string, readonly string[]>
 
 export function getHighVariant(modelID: string): string | null {

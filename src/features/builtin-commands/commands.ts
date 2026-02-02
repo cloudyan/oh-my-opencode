@@ -2,6 +2,7 @@ import type { CommandDefinition } from "../claude-code-command-loader"
 import type { BuiltinCommandName, BuiltinCommands } from "./types"
 import { INIT_DEEP_TEMPLATE } from "./templates/init-deep"
 import { RALPH_LOOP_TEMPLATE, CANCEL_RALPH_TEMPLATE } from "./templates/ralph-loop"
+import { STOP_CONTINUATION_TEMPLATE } from "./templates/stop-continuation"
 import { REFACTOR_TEMPLATE } from "./templates/refactor"
 import { START_WORK_TEMPLATE } from "./templates/start-work"
 
@@ -17,17 +18,28 @@ $ARGUMENTS
 </user-request>`,
     argumentHint: "[--create-new] [--max-depth=N]",
   },
-  "ralph-loop": {
-    description: "(builtin) Start self-referential development loop until completion",
-    template: `<command-instruction>
+   "ralph-loop": {
+     description: "(builtin) Start self-referential development loop until completion",
+     template: `<command-instruction>
 ${RALPH_LOOP_TEMPLATE}
 </command-instruction>
 
 <user-task>
 $ARGUMENTS
 </user-task>`,
-    argumentHint: '"task description" [--completion-promise=TEXT] [--max-iterations=N]',
-  },
+     argumentHint: '"task description" [--completion-promise=TEXT] [--max-iterations=N]',
+   },
+   "ulw-loop": {
+     description: "(builtin) Start ultrawork loop - continues until completion with ultrawork mode",
+     template: `<command-instruction>
+${RALPH_LOOP_TEMPLATE}
+</command-instruction>
+
+<user-task>
+$ARGUMENTS
+</user-task>`,
+     argumentHint: '"task description" [--completion-promise=TEXT] [--max-iterations=N]',
+   },
   "cancel-ralph": {
     description: "(builtin) Cancel active Ralph Loop",
     template: `<command-instruction>
@@ -44,7 +56,7 @@ ${REFACTOR_TEMPLATE}
   },
   "start-work": {
     description: "(builtin) Start Sisyphus work session from Prometheus plan",
-    agent: "orchestrator-sisyphus",
+    agent: "atlas",
     template: `<command-instruction>
 ${START_WORK_TEMPLATE}
 </command-instruction>
@@ -59,6 +71,12 @@ $ARGUMENTS
 </user-request>`,
     argumentHint: "[plan-name]",
   },
+  "stop-continuation": {
+    description: "(builtin) Stop all continuation mechanisms (ralph loop, todo continuation, boulder) for this session",
+    template: `<command-instruction>
+${STOP_CONTINUATION_TEMPLATE}
+</command-instruction>`,
+  },
 }
 
 export function loadBuiltinCommands(
@@ -70,7 +88,7 @@ export function loadBuiltinCommands(
   for (const [name, definition] of Object.entries(BUILTIN_COMMAND_DEFINITIONS)) {
     if (!disabled.has(name as BuiltinCommandName)) {
       const { argumentHint: _argumentHint, ...openCodeCompatible } = definition
-      commands[name] = openCodeCompatible as CommandDefinition
+      commands[name] = { ...openCodeCompatible, name } as CommandDefinition
     }
   }
 

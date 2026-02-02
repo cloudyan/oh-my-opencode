@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock, spyOn } from "bun:test"
+import type { ToolContext } from "@opencode-ai/plugin/tool"
 import * as fs from "node:fs"
 import { createSkillTool } from "./tools"
 import { SkillMcpManager } from "../../features/skill-mcp-manager"
@@ -20,6 +21,21 @@ Test skill body content`
   },
 }))
 
+function createMockSkill(name: string, options: { agent?: string } = {}): LoadedSkill {
+  return {
+    name,
+    path: `/test/skills/${name}/SKILL.md`,
+    resolvedPath: `/test/skills/${name}`,
+    definition: {
+      name,
+      description: `Test skill ${name}`,
+      template: "Test template",
+      agent: options.agent,
+    },
+    scope: "opencode-project",
+  }
+}
+
 function createMockSkillWithMcp(name: string, mcpServers: Record<string, unknown>): LoadedSkill {
   return {
     name,
@@ -35,12 +51,108 @@ function createMockSkillWithMcp(name: string, mcpServers: Record<string, unknown
   }
 }
 
-const mockContext = {
+const mockContext: ToolContext = {
   sessionID: "test-session",
   messageID: "msg-1",
   agent: "test-agent",
+  directory: "/test",
+  worktree: "/test",
   abort: new AbortController().signal,
+  metadata: () => {},
+  ask: async () => {},
 }
+
+describe("skill tool - synchronous description", () => {
+  it("includes available_skills immediately when skills are pre-provided", () => {
+    // given
+    const loadedSkills = [createMockSkill("test-skill")]
+
+    // when
+    const tool = createSkillTool({ skills: loadedSkills })
+
+    // then
+    expect(tool.description).toContain("<available_skills>")
+    expect(tool.description).toContain("test-skill")
+  })
+
+  it("includes all pre-provided skills in available_skills immediately", () => {
+    // given
+    const loadedSkills = [
+      createMockSkill("playwright"),
+      createMockSkill("frontend-ui-ux"),
+      createMockSkill("git-master"),
+    ]
+
+    // when
+    const tool = createSkillTool({ skills: loadedSkills })
+
+    // then
+    expect(tool.description).toContain("playwright")
+    expect(tool.description).toContain("frontend-ui-ux")
+    expect(tool.description).toContain("git-master")
+  })
+
+  it("shows no-skills message immediately when empty skills are pre-provided", () => {
+    // given / #when
+    const tool = createSkillTool({ skills: [] })
+
+    // then
+    expect(tool.description).toContain("No skills are currently available")
+  })
+})
+
+describe("skill tool - agent restriction", () => {
+  it("allows skill without agent restriction to any agent", async () => {
+    // given
+    const loadedSkills = [createMockSkill("public-skill")]
+    const tool = createSkillTool({ skills: loadedSkills })
+    const context = { ...mockContext, agent: "any-agent" }
+
+    // when
+    const result = await tool.execute({ name: "public-skill" }, context)
+
+    // then
+    expect(result).toContain("public-skill")
+  })
+
+  it("allows skill when agent matches restriction", async () => {
+    // given
+    const loadedSkills = [createMockSkill("restricted-skill", { agent: "sisyphus" })]
+    const tool = createSkillTool({ skills: loadedSkills })
+    const context = { ...mockContext, agent: "sisyphus" }
+
+    // when
+    const result = await tool.execute({ name: "restricted-skill" }, context)
+
+    // then
+    expect(result).toContain("restricted-skill")
+  })
+
+  it("throws error when agent does not match restriction", async () => {
+    // given
+    const loadedSkills = [createMockSkill("sisyphus-only-skill", { agent: "sisyphus" })]
+    const tool = createSkillTool({ skills: loadedSkills })
+    const context = { ...mockContext, agent: "oracle" }
+
+    // when / #then
+    await expect(tool.execute({ name: "sisyphus-only-skill" }, context)).rejects.toThrow(
+      'Skill "sisyphus-only-skill" is restricted to agent "sisyphus"'
+    )
+  })
+
+  it("throws error when context agent is undefined for restricted skill", async () => {
+    // given
+    const loadedSkills = [createMockSkill("sisyphus-only-skill", { agent: "sisyphus" })]
+    const tool = createSkillTool({ skills: loadedSkills })
+    const contextWithoutAgent = { ...mockContext, agent: undefined as unknown as string }
+
+    // when / #then
+    await expect(tool.execute({ name: "sisyphus-only-skill" }, contextWithoutAgent)).rejects.toThrow(
+      'Skill "sisyphus-only-skill" is restricted to agent "sisyphus"'
+    )
+  })
+
+})
 
 describe("skill tool - MCP schema display", () => {
   let manager: SkillMcpManager
@@ -55,7 +167,7 @@ describe("skill tool - MCP schema display", () => {
 
   describe("formatMcpCapabilities with inputSchema", () => {
     it("displays tool inputSchema when available", async () => {
-      // #given
+      // given
       const mockToolsWithSchema: McpTool[] = [
         {
           name: "browser_type",
@@ -90,10 +202,10 @@ describe("skill tool - MCP schema display", () => {
         getSessionID: () => sessionID,
       })
 
-      // #when
+      // when
       const result = await tool.execute({ name: "test-skill" }, mockContext)
 
-      // #then
+      // then
       // Should include inputSchema details
       expect(result).toContain("browser_type")
       expect(result).toContain("inputSchema")
@@ -105,7 +217,7 @@ describe("skill tool - MCP schema display", () => {
     })
 
     it("displays multiple tools with their schemas", async () => {
-      // #given
+      // given
       const mockToolsWithSchema: McpTool[] = [
         {
           name: "browser_navigate",
@@ -148,10 +260,10 @@ describe("skill tool - MCP schema display", () => {
         getSessionID: () => sessionID,
       })
 
-      // #when
+      // when
       const result = await tool.execute({ name: "playwright-skill" }, mockContext)
 
-      // #then
+      // then
       expect(result).toContain("browser_navigate")
       expect(result).toContain("browser_click")
       expect(result).toContain("url")
@@ -159,7 +271,7 @@ describe("skill tool - MCP schema display", () => {
     })
 
     it("handles tools without inputSchema gracefully", async () => {
-      // #given
+      // given
       const mockToolsMinimal: McpTool[] = [
         {
           name: "simple_tool",
@@ -183,16 +295,16 @@ describe("skill tool - MCP schema display", () => {
         getSessionID: () => sessionID,
       })
 
-      // #when
+      // when
       const result = await tool.execute({ name: "simple-skill" }, mockContext)
 
-      // #then
+      // then
       expect(result).toContain("simple_tool")
       // Should not throw, should handle gracefully
     })
 
     it("formats schema in a way LLM can understand for skill_mcp calls", async () => {
-      // #given
+      // given
       const mockTools: McpTool[] = [
         {
           name: "query",
@@ -224,10 +336,10 @@ describe("skill tool - MCP schema display", () => {
         getSessionID: () => sessionID,
       })
 
-      // #when
+      // when
       const result = await tool.execute({ name: "db-skill" }, mockContext)
 
-      // #then
+      // then
       // Should provide enough info for LLM to construct valid skill_mcp call
       expect(result).toContain("sqlite")
       expect(result).toContain("query")

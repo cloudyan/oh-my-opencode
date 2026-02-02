@@ -2,71 +2,62 @@
 
 ## OVERVIEW
 
-Claude Code compatibility layer + core feature modules. Commands, skills, agents, MCPs, hooks from Claude Code work seamlessly.
+20 feature modules: background agents, skill MCPs, builtin skills/commands, Claude Code compatibility layer.
+
+**Feature Types**: Task orchestration, Skill definitions, Command templates, Claude Code loaders, Supporting utilities
 
 ## STRUCTURE
 
 ```
 features/
-├── background-agent/           # Task lifecycle, notifications (608 lines)
-├── boulder-state/              # Boulder state persistence
-├── builtin-commands/           # Built-in slash commands
-│   └── templates/              # start-work, refactor, init-deep, ralph-loop
-├── builtin-skills/             # Built-in skills
-│   ├── git-master/             # Atomic commits, rebase, history search
-│   └── frontend-ui-ux/         # Designer-turned-developer skill
+├── background-agent/           # Task lifecycle (1418 lines)
+│   ├── manager.ts              # Launch → poll → complete
+│   └── concurrency.ts          # Per-provider limits
+├── builtin-skills/             # Core skills (1729 lines)
+│   └── skills.ts               # playwright, dev-browser, frontend-ui-ux, git-master, typescript-programmer
+├── builtin-commands/           # ralph-loop, refactor, ulw-loop, init-deep, start-work, cancel-ralph, stop-continuation
 ├── claude-code-agent-loader/   # ~/.claude/agents/*.md
 ├── claude-code-command-loader/ # ~/.claude/commands/*.md
-├── claude-code-mcp-loader/     # .mcp.json files
-│   └── env-expander.ts         # ${VAR} expansion
-├── claude-code-plugin-loader/  # installed_plugins.json (486 lines)
-├── claude-code-session-state/  # Session state persistence
-├── context-injector/           # Context collection and injection
-├── opencode-skill-loader/      # Skills from OpenCode + Claude paths
-├── skill-mcp-manager/          # MCP servers in skill YAML
-├── task-toast-manager/         # Task toast notifications
-└── hook-message-injector/      # Inject messages into conversation
+├── claude-code-mcp-loader/     # .mcp.json with ${VAR} expansion
+├── claude-code-plugin-loader/  # installed_plugins.json
+├── claude-code-session-state/  # Session persistence
+├── opencode-skill-loader/      # Skills from 6 directories
+├── context-injector/           # AGENTS.md/README.md injection
+├── boulder-state/              # Todo state persistence
+├── hook-message-injector/      # Message injection
+├── task-toast-manager/         # Background task notifications
+├── skill-mcp-manager/          # MCP client lifecycle (617 lines)
+├── tmux-subagent/              # Tmux session management
+├── mcp-oauth/                  # MCP OAuth handling
+├── sisyphus-swarm/             # Swarm coordination
+└── sisyphus-tasks/             # Task tracking
 ```
 
 ## LOADER PRIORITY
 
-| Loader | Priority (highest first) |
-|--------|--------------------------|
-| Commands | `.opencode/command/` > `~/.config/opencode/command/` > `.claude/commands/` > `~/.claude/commands/` |
-| Skills | `.opencode/skill/` > `~/.config/opencode/skill/` > `.claude/skills/` > `~/.claude/skills/` |
-| Agents | `.claude/agents/` > `~/.claude/agents/` |
+| Type | Priority (highest first) |
+|------|--------------------------|
+| Commands | `.opencode/command/` > `~/.config/opencode/command/` > `.claude/commands/` |
+| Skills | `.opencode/skills/` > `~/.config/opencode/skills/` > `.claude/skills/` |
 | MCPs | `.claude/.mcp.json` > `.mcp.json` > `~/.claude/.mcp.json` |
-
-## CONFIG TOGGLES
-
-```json
-{
-  "claude_code": {
-    "mcp": false,      // Skip .mcp.json
-    "commands": false, // Skip commands/*.md
-    "skills": false,   // Skip skills/*/SKILL.md
-    "agents": false,   // Skip agents/*.md
-    "hooks": false     // Skip settings.json hooks
-  }
-}
-```
 
 ## BACKGROUND AGENT
 
-- Lifecycle: pending → running → completed/failed
-- OS notification on complete
-- `background_output` to retrieve results
-- `background_cancel` with task_id or all=true
+- **Lifecycle**: `launch` → `poll` (2s) → `complete`
+- **Stability**: 3 consecutive polls = idle
+- **Concurrency**: Per-provider/model limits via `ConcurrencyManager`
+- **Cleanup**: 30m TTL, 3m stale timeout
+- **State**: Per-session Maps, cleaned on `session.deleted`
 
 ## SKILL MCP
 
-- MCP servers embedded in skill YAML frontmatter
-- Lazy client loading, session-scoped cleanup
-- `skill_mcp` tool exposes capabilities
+- **Lazy**: Clients created on first call
+- **Transports**: stdio, http (SSE/Streamable)
+- **Lifecycle**: 5m idle cleanup
 
 ## ANTI-PATTERNS
 
-- Blocking on load (loaders run at startup)
-- No error handling (always try/catch)
-- Ignoring priority order
-- Writing to ~/.claude/ (read-only)
+- **Sequential delegation**: Use `delegate_task` parallel
+- **Trust self-reports**: ALWAYS verify
+- **Main thread blocks**: No heavy I/O in loader init
+- **Direct state mutation**: Use managers for boulder/session state

@@ -3,11 +3,9 @@ import { CHECK_IDS, CHECK_NAMES } from "../constants"
 
 async function checkBinaryExists(binary: string): Promise<{ exists: boolean; path: string | null }> {
   try {
-    const proc = Bun.spawn(["which", binary], { stdout: "pipe", stderr: "pipe" })
-    const output = await new Response(proc.stdout).text()
-    await proc.exited
-    if (proc.exitCode === 0) {
-      return { exists: true, path: output.trim() }
+    const path = Bun.which(binary)
+    if (path) {
+      return { exists: true, path }
     }
   } catch {
     // intentionally empty - binary not found
@@ -56,9 +54,10 @@ export async function checkAstGrepCli(): Promise<DependencyInfo> {
   }
 }
 
-export function checkAstGrepNapi(): DependencyInfo {
+export async function checkAstGrepNapi(): Promise<DependencyInfo> {
+  // Try dynamic import first (works in bunx temporary environments)
   try {
-    require.resolve("@ast-grep/napi")
+    await import("@ast-grep/napi")
     return {
       name: "AST-Grep NAPI",
       required: false,
@@ -67,6 +66,28 @@ export function checkAstGrepNapi(): DependencyInfo {
       path: null,
     }
   } catch {
+    // Fallback: check common installation paths
+    const { existsSync } = await import("fs")
+    const { join } = await import("path")
+    const { homedir } = await import("os")
+
+    const pathsToCheck = [
+      join(homedir(), ".config", "opencode", "node_modules", "@ast-grep", "napi"),
+      join(process.cwd(), "node_modules", "@ast-grep", "napi"),
+    ]
+
+    for (const napiPath of pathsToCheck) {
+      if (existsSync(napiPath)) {
+        return {
+          name: "AST-Grep NAPI",
+          required: false,
+          installed: true,
+          version: null,
+          path: napiPath,
+        }
+      }
+    }
+
     return {
       name: "AST-Grep NAPI",
       required: false,
@@ -127,7 +148,7 @@ export async function checkDependencyAstGrepCli(): Promise<CheckResult> {
 }
 
 export async function checkDependencyAstGrepNapi(): Promise<CheckResult> {
-  const info = checkAstGrepNapi()
+  const info = await checkAstGrepNapi()
   return dependencyToCheckResult(info, CHECK_NAMES[CHECK_IDS.DEP_AST_GREP_NAPI])
 }
 

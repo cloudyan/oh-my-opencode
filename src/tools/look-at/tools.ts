@@ -3,7 +3,28 @@ import { pathToFileURL } from "node:url"
 import { tool, type PluginInput, type ToolDefinition } from "@opencode-ai/plugin"
 import { LOOK_AT_DESCRIPTION, MULTIMODAL_LOOKER_AGENT } from "./constants"
 import type { LookAtArgs } from "./types"
-import { log } from "../../shared/logger"
+import { log, promptWithModelSuggestionRetry } from "../../shared"
+
+interface LookAtArgsWithAlias extends LookAtArgs {
+  path?: string
+}
+
+export function normalizeArgs(args: LookAtArgsWithAlias): LookAtArgs {
+  return {
+    file_path: args.file_path ?? args.path ?? "",
+    goal: args.goal ?? "",
+  }
+}
+
+export function validateArgs(args: LookAtArgs): string | null {
+  if (!args.file_path) {
+    return `Error: Missing required parameter 'file_path'. Usage: look_at(file_path="/path/to/file", goal="what to extract")`
+  }
+  if (!args.goal) {
+    return `Error: Missing required parameter 'goal'. Usage: look_at(file_path="/path/to/file", goal="what to extract")`
+  }
+  return null
+}
 
 function inferMimeType(filePath: string): string {
   const ext = extname(filePath).toLowerCase()
@@ -50,7 +71,14 @@ export function createLookAt(ctx: PluginInput): ToolDefinition {
       file_path: tool.schema.string().describe("Absolute path to the file to analyze"),
       goal: tool.schema.string().describe("What specific information to extract from the file"),
     },
-    async execute(args: LookAtArgs, toolContext) {
+    async execute(rawArgs: LookAtArgs, toolContext) {
+      const args = normalizeArgs(rawArgs as LookAtArgsWithAlias)
+      const validationError = validateArgs(args)
+      if (validationError) {
+        log(`[look_at] Validation failed: ${validationError}`)
+        return validationError
+      }
+
       log(`[look_at] Analyzing file: ${args.file_path}, goal: ${args.goal}`)
 
       const mimeType = inferMimeType(args.file_path)
@@ -65,38 +93,116 @@ Be thorough on what was requested, concise on everything else.
 If the requested information is not found, clearly state what is missing.`
 
       log(`[look_at] Creating session with parent: ${toolContext.sessionID}`)
+      const parentSession = await ctx.client.session.get({
+        path: { id: toolContext.sessionID },
+      }).catch(() => null)
+      const parentDirectory = parentSession?.data?.directory ?? ctx.directory
+
       const createResult = await ctx.client.session.create({
         body: {
           parentID: toolContext.sessionID,
           title: `look_at: ${args.goal.substring(0, 50)}`,
+          permission: [
+            { permission: "question", action: "deny" as const, pattern: "*" },
+          ],
+        } as any,
+        query: {
+          directory: parentDirectory,
         },
       })
 
       if (createResult.error) {
         log(`[look_at] Session create error:`, createResult.error)
+        const errorStr = String(createResult.error)
+        if (errorStr.toLowerCase().includes("unauthorized")) {
+          return `Error: Failed to create session (Unauthorized). This may be due to:
+1. OAuth token restrictions (e.g., Claude Code credentials are restricted to Claude Code only)
+2. Provider authentication issues
+3. Session permission inheritance problems
+
+Try using a different provider or API key authentication.
+
+Original error: ${createResult.error}`
+        }
         return `Error: Failed to create session: ${createResult.error}`
       }
 
       const sessionID = createResult.data.id
       log(`[look_at] Created session: ${sessionID}`)
 
+      let agentModel: { providerID: string; modelID: string } | undefined
+      let agentVariant: string | undefined
+
+      try {
+        const agentsResult = await ctx.client.app?.agents?.()
+        type AgentInfo = {
+          name: string
+          mode?: "subagent" | "primary" | "all"
+          model?: { providerID: string; modelID: string }
+          variant?: string
+        }
+        const agents = ((agentsResult as { data?: AgentInfo[] })?.data ?? agentsResult) as AgentInfo[] | undefined
+        if (agents?.length) {
+          const matchedAgent = agents.find(
+            (agent) => agent.name.toLowerCase() === MULTIMODAL_LOOKER_AGENT.toLowerCase()
+          )
+          if (matchedAgent?.model) {
+            agentModel = matchedAgent.model
+          }
+          if (matchedAgent?.variant) {
+            agentVariant = matchedAgent.variant
+          }
+        }
+      } catch (error) {
+        log("[look_at] Failed to resolve multimodal-looker model info", error)
+      }
+
       log(`[look_at] Sending prompt with file passthrough to session ${sessionID}`)
-      await ctx.client.session.prompt({
-        path: { id: sessionID },
-        body: {
-          agent: MULTIMODAL_LOOKER_AGENT,
-          tools: {
-            task: false,
-            call_omo_agent: false,
-            look_at: false,
-            read: false,
+      try {
+        await promptWithModelSuggestionRetry(ctx.client, {
+          path: { id: sessionID },
+          body: {
+            agent: MULTIMODAL_LOOKER_AGENT,
+            tools: {
+              task: false,
+              call_omo_agent: false,
+              look_at: false,
+              read: false,
+            },
+            parts: [
+              { type: "text", text: prompt },
+              { type: "file", mime: mimeType, url: pathToFileURL(args.file_path).href, filename },
+            ],
+            ...(agentModel ? { model: { providerID: agentModel.providerID, modelID: agentModel.modelID } } : {}),
+            ...(agentVariant ? { variant: agentVariant } : {}),
           },
-          parts: [
-            { type: "text", text: prompt },
-            { type: "file", mime: mimeType, url: pathToFileURL(args.file_path).href, filename },
-          ],
-        },
-      })
+        })
+      } catch (promptError) {
+        const errorMessage = promptError instanceof Error ? promptError.message : String(promptError)
+        log(`[look_at] Prompt error:`, promptError)
+
+        const isJsonParseError = errorMessage.includes("JSON") && (errorMessage.includes("EOF") || errorMessage.includes("parse"))
+        if (isJsonParseError) {
+          return `Error: Failed to analyze file - received malformed response from multimodal-looker agent.
+
+This typically occurs when:
+1. The multimodal-looker model is not available or not connected
+2. The model does not support this file type (${mimeType})
+3. The API returned an empty or truncated response
+
+File: ${args.file_path}
+MIME type: ${mimeType}
+
+Try:
+- Ensure a vision-capable model (e.g., gemini-3-flash, gpt-5.2) is available
+- Check provider connections in opencode settings
+- For text files like .md, .txt, use the Read tool instead
+
+Original error: ${errorMessage}`
+        }
+
+        return `Error: Failed to send prompt to multimodal-looker agent: ${errorMessage}`
+      }
 
       log(`[look_at] Prompt sent, fetching messages...`)
 

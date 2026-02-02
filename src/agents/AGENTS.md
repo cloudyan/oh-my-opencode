@@ -2,95 +2,72 @@
 
 ## OVERVIEW
 
-AI agent definitions for multi-model orchestration. 7 specialized agents: Sisyphus (orchestrator), oracle (read-only consultation), librarian (research), explore (grep), frontend-ui-ux-engineer, document-writer, multimodal-looker.
+11 AI agents for multi-model orchestration. Each agent has factory function + metadata + fallback chains.
+
+**Primary Agents** (respect UI model selection):
+- Sisyphus, Atlas, Prometheus
+
+**Subagents** (use own fallback chains):
+- Hephaestus, Oracle, Librarian, Explore, Multimodal-Looker, Metis, Momus, Sisyphus-Junior
 
 ## STRUCTURE
-
 ```
 agents/
-├── orchestrator-sisyphus.ts # Orchestrator agent (1484 lines) - complex delegation
-├── sisyphus.ts              # Main Sisyphus prompt (641 lines)
-├── sisyphus-junior.ts       # Junior variant for delegated tasks
-├── oracle.ts                # Strategic advisor (GPT-5.2)
-├── librarian.ts             # Multi-repo research (Claude Sonnet 4.5)
-├── explore.ts               # Fast codebase grep (Grok Code)
-├── frontend-ui-ux-engineer.ts  # UI generation (Gemini 3 Pro)
-├── document-writer.ts       # Technical docs (Gemini 3 Pro)
-├── multimodal-looker.ts     # PDF/image analysis (Gemini 3 Flash)
-├── prometheus-prompt.ts     # Planning agent prompt (982 lines)
-├── metis.ts                 # Plan Consultant agent (404 lines)
-├── momus.ts                 # Plan Reviewer agent (404 lines)
-├── build-prompt.ts          # Shared build agent prompt
-├── plan-prompt.ts           # Shared plan agent prompt
-├── types.ts                 # AgentModelConfig interface
-├── utils.ts                 # createBuiltinAgents(), getAgentName()
-└── index.ts                 # builtinAgents export
+├── atlas.ts                    # Master Orchestrator (holds todo list)
+├── sisyphus.ts                 # Main prompt (SF Bay Area engineer identity)
+├── hephaestus.ts               # Autonomous Deep Worker (GPT 5.2 Codex, "The Legitimate Craftsman")
+├── sisyphus-junior.ts          # Delegated task executor (category-spawned)
+├── oracle.ts                   # Strategic advisor (GPT-5.2)
+├── librarian.ts                # Multi-repo research (GitHub CLI, Context7)
+├── explore.ts                  # Fast contextual grep (Claude Haiku)
+├── multimodal-looker.ts        # Media analyzer (Gemini 3 Flash)
+├── prometheus-prompt.ts        # Planning (Interview/Consultant mode, 1283 lines)
+├── metis.ts                    # Pre-planning analysis (Gap detection)
+├── momus.ts                    # Plan reviewer (Ruthless fault-finding)
+├── dynamic-agent-prompt-builder.ts  # Dynamic prompt generation
+├── types.ts                    # AgentModelConfig, AgentPromptMetadata
+├── utils.ts                    # createBuiltinAgents(), resolveModelWithFallback()
+└── index.ts                    # builtinAgents export
 ```
 
 ## AGENT MODELS
+| Agent | Model | Temp | Purpose |
+|-------|-------|------|---------|
+| Sisyphus | anthropic/claude-opus-4-5 | 0.1 | Primary orchestrator (fallback: kimi-k2.5 → glm-4.7 → gpt-5.2-codex → gemini-3-pro) |
+| Hephaestus | openai/gpt-5.2-codex | 0.1 | Autonomous deep worker, "The Legitimate Craftsman" (requires gpt-5.2-codex, no fallback) |
+| Atlas | anthropic/claude-sonnet-4-5 | 0.1 | Master orchestrator (fallback: kimi-k2.5 → gpt-5.2) |
+| oracle | openai/gpt-5.2 | 0.1 | Consultation, debugging |
+| librarian | zai-coding-plan/glm-4.7 | 0.1 | Docs, GitHub search (fallback: glm-4.7-free) |
+| explore | anthropic/claude-haiku-4-5 | 0.1 | Fast contextual grep (fallback: gpt-5-mini → gpt-5-nano) |
+| multimodal-looker | google/gemini-3-flash | 0.1 | PDF/image analysis |
+| Prometheus | anthropic/claude-opus-4-5 | 0.1 | Strategic planning (fallback: kimi-k2.5 → gpt-5.2) |
+| Metis | anthropic/claude-opus-4-5 | 0.3 | Pre-planning analysis (fallback: kimi-k2.5 → gpt-5.2) |
+| Momus | openai/gpt-5.2 | 0.1 | Plan validation (fallback: claude-opus-4-5) |
+| Sisyphus-Junior | anthropic/claude-sonnet-4-5 | 0.1 | Category-spawned executor |
 
-| Agent | Default Model | Fallback | Purpose |
-|-------|---------------|----------|---------|
-| Sisyphus | anthropic/claude-opus-4-5 | - | Primary orchestrator with extended thinking |
-| oracle | openai/gpt-5.2 | - | Read-only consultation. High-IQ debugging, architecture |
-| librarian | anthropic/claude-sonnet-4-5 | google/gemini-3-flash | Docs, OSS research, GitHub examples |
-| explore | opencode/grok-code | google/gemini-3-flash, anthropic/claude-haiku-4-5 | Fast contextual grep |
-| frontend-ui-ux-engineer | google/gemini-3-pro-preview | - | UI/UX code generation |
-| document-writer | google/gemini-3-pro-preview | - | Technical writing |
-| multimodal-looker | google/gemini-3-flash | - | PDF/image analysis |
+## HOW TO ADD
+1. Create `src/agents/my-agent.ts` exporting factory + metadata.
+2. Add to `agentSources` in `src/agents/utils.ts`.
+3. Update `AgentNameSchema` in `src/config/schema.ts`.
+4. Register in `src/index.ts` initialization.
 
-## HOW TO ADD AN AGENT
+## TOOL RESTRICTIONS
+| Agent | Denied Tools |
+|-------|-------------|
+| oracle | write, edit, task, delegate_task |
+| librarian | write, edit, task, delegate_task, call_omo_agent |
+| explore | write, edit, task, delegate_task, call_omo_agent |
+| multimodal-looker | Allowlist: read only |
+| Sisyphus-Junior | task, delegate_task |
 
-1. Create `src/agents/my-agent.ts`:
-   ```typescript
-   import type { AgentConfig } from "@opencode-ai/sdk"
-   
-   export const myAgent: AgentConfig = {
-     model: "provider/model-name",
-     temperature: 0.1,
-     system: "Agent system prompt...",
-     tools: { include: ["tool1", "tool2"] },  // or exclude: [...]
-   }
-   ```
-2. Add to `builtinAgents` in `src/agents/index.ts`
-3. Update `types.ts` if adding new config options
+## PATTERNS
+- **Factory**: `createXXXAgent(model: string): AgentConfig`
+- **Metadata**: `XXX_PROMPT_METADATA` with category, cost, triggers.
+- **Tool restrictions**: `createAgentToolRestrictions(tools)` or `createAgentToolAllowlist(tools)`.
+- **Thinking**: 32k budget tokens for Sisyphus, Oracle, Prometheus, Atlas.
 
-## AGENT CONFIG OPTIONS
-
-| Option | Type | Description |
-|--------|------|-------------|
-| model | string | Model identifier (provider/model-name) |
-| temperature | number | 0.0-1.0, most use 0.1 for consistency |
-| system | string | System prompt (can be multiline template literal) |
-| tools | object | `{ include: [...] }` or `{ exclude: [...] }` |
-| top_p | number | Optional nucleus sampling |
-| maxTokens | number | Optional max output tokens |
-
-## MODEL FALLBACK LOGIC
-
-`createBuiltinAgents()` in utils.ts handles model fallback:
-
-1. Check user config override (`agents.{name}.model`)
-2. Check installer settings (claude max20, gemini antigravity)
-3. Use default model
-
-**Fallback order for explore**:
-- If gemini antigravity enabled → `google/gemini-3-flash`
-- If claude max20 enabled → `anthropic/claude-haiku-4-5`
-- Default → `opencode/grok-code` (free)
-
-## ANTI-PATTERNS (AGENTS)
-
-- **High temperature**: Don't use >0.3 for code-related agents
-- **Broad tool access**: Prefer explicit `include` over unrestricted access
-- **Monolithic prompts**: Keep prompts focused; delegate to specialized agents
-- **Missing fallbacks**: Consider free/cheap fallbacks for rate-limited models
-
-## SHARED PROMPTS
-
-- **build-prompt.ts**: Base prompt for build agents (OpenCode default + Sisyphus variants)
-- **plan-prompt.ts**: Base prompt for plan agents (legacy)
-- **prometheus-prompt.ts**: System prompt for Prometheus (Planner) agent
-- **metis.ts**: Metis (Plan Consultant) agent for pre-planning analysis
-
-Used by `src/index.ts` when creating Builder-Sisyphus and Prometheus (Planner) variants.
+## ANTI-PATTERNS
+- **Trust reports**: NEVER trust "I'm done" - verify outputs.
+- **High temp**: Don't use >0.3 for code agents.
+- **Sequential calls**: Use `delegate_task` with `run_in_background` for exploration.
+- **Prometheus writing code**: Planner only - never implements.

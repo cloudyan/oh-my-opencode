@@ -1,71 +1,67 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test"
+import { describe, test, expect } from "bun:test"
 import {
   createAgentToolRestrictions,
+  createAgentToolAllowlist,
   migrateToolsToPermission,
-  migratePermissionToTools,
   migrateAgentConfig,
 } from "./permission-compat"
-import { setVersionCache, resetVersionCache } from "./opencode-version"
 
 describe("permission-compat", () => {
-  beforeEach(() => {
-    resetVersionCache()
-  })
-
-  afterEach(() => {
-    resetVersionCache()
-  })
-
   describe("createAgentToolRestrictions", () => {
-    test("returns permission format for v1.1.1+", () => {
-      // #given version is 1.1.1
-      setVersionCache("1.1.1")
-
-      // #when creating restrictions
+    test("returns permission format with deny values", () => {
+      // given tools to restrict
+      // when creating restrictions
       const result = createAgentToolRestrictions(["write", "edit"])
 
-      // #then returns permission format
+      // then returns permission format
       expect(result).toEqual({
         permission: { write: "deny", edit: "deny" },
       })
     })
 
-    test("returns tools format for versions below 1.1.1", () => {
-      // #given version is below 1.1.1
-      setVersionCache("1.0.150")
+    test("returns empty permission for empty array", () => {
+      // given empty tools array
+      // when creating restrictions
+      const result = createAgentToolRestrictions([])
 
-      // #when creating restrictions
-      const result = createAgentToolRestrictions(["write", "edit"])
+      // then returns empty permission
+      expect(result).toEqual({ permission: {} })
+    })
+  })
 
-      // #then returns tools format
+  describe("createAgentToolAllowlist", () => {
+    test("returns wildcard deny with explicit allow", () => {
+      // given tools to allow
+      // when creating allowlist
+      const result = createAgentToolAllowlist(["read"])
+
+      // then returns wildcard deny with read allow
       expect(result).toEqual({
-        tools: { write: false, edit: false },
+        permission: { "*": "deny", read: "allow" },
       })
     })
 
-    test("assumes new format when version unknown", () => {
-      // #given version is null
-      setVersionCache(null)
+    test("returns wildcard deny with multiple allows", () => {
+      // given multiple tools to allow
+      // when creating allowlist
+      const result = createAgentToolAllowlist(["read", "glob"])
 
-      // #when creating restrictions
-      const result = createAgentToolRestrictions(["write"])
-
-      // #then returns permission format (assumes new version)
+      // then returns wildcard deny with both allows
       expect(result).toEqual({
-        permission: { write: "deny" },
+        permission: { "*": "deny", read: "allow", glob: "allow" },
       })
     })
   })
 
   describe("migrateToolsToPermission", () => {
     test("converts boolean tools to permission values", () => {
-      // #given tools config
+      // given tools config
       const tools = { write: false, edit: true, bash: false }
 
-      // #when migrating
+      // when migrating
       const result = migrateToolsToPermission(tools)
 
-      // #then converts correctly
+      // then converts correctly
       expect(result).toEqual({
         write: "deny",
         edit: "allow",
@@ -74,71 +70,25 @@ describe("permission-compat", () => {
     })
   })
 
-  describe("migratePermissionToTools", () => {
-    test("converts permission to boolean tools", () => {
-      // #given permission config
-      const permission = { write: "deny" as const, edit: "allow" as const }
-
-      // #when migrating
-      const result = migratePermissionToTools(permission)
-
-      // #then converts correctly
-      expect(result).toEqual({ write: false, edit: true })
-    })
-
-    test("excludes ask values", () => {
-      // #given permission with ask
-      const permission = {
-        write: "deny" as const,
-        edit: "ask" as const,
-        bash: "allow" as const,
-      }
-
-      // #when migrating
-      const result = migratePermissionToTools(permission)
-
-      // #then ask is excluded
-      expect(result).toEqual({ write: false, bash: true })
-    })
-  })
-
   describe("migrateAgentConfig", () => {
-    test("migrates tools to permission for v1.1.1+", () => {
-      // #given v1.1.1 and config with tools
-      setVersionCache("1.1.1")
+    test("migrates tools to permission", () => {
+      // given config with tools
       const config = {
         model: "test",
         tools: { write: false, edit: false },
       }
 
-      // #when migrating
+      // when migrating
       const result = migrateAgentConfig(config)
 
-      // #then converts to permission
+      // then converts to permission
       expect(result.tools).toBeUndefined()
       expect(result.permission).toEqual({ write: "deny", edit: "deny" })
       expect(result.model).toBe("test")
     })
 
-    test("migrates permission to tools for old versions", () => {
-      // #given old version and config with permission
-      setVersionCache("1.0.150")
-      const config = {
-        model: "test",
-        permission: { write: "deny" as const, edit: "deny" as const },
-      }
-
-      // #when migrating
-      const result = migrateAgentConfig(config)
-
-      // #then converts to tools
-      expect(result.permission).toBeUndefined()
-      expect(result.tools).toEqual({ write: false, edit: false })
-    })
-
     test("preserves other config fields", () => {
-      // #given config with other fields
-      setVersionCache("1.1.1")
+      // given config with other fields
       const config = {
         model: "test",
         temperature: 0.5,
@@ -146,13 +96,39 @@ describe("permission-compat", () => {
         tools: { write: false },
       }
 
-      // #when migrating
+      // when migrating
       const result = migrateAgentConfig(config)
 
-      // #then preserves other fields
+      // then preserves other fields
       expect(result.model).toBe("test")
       expect(result.temperature).toBe(0.5)
       expect(result.prompt).toBe("hello")
+    })
+
+    test("merges existing permission with migrated tools", () => {
+      // given config with both tools and permission
+      const config = {
+        tools: { write: false },
+        permission: { bash: "deny" as const },
+      }
+
+      // when migrating
+      const result = migrateAgentConfig(config)
+
+      // then merges permission (existing takes precedence)
+      expect(result.tools).toBeUndefined()
+      expect(result.permission).toEqual({ write: "deny", bash: "deny" })
+    })
+
+    test("returns unchanged config if no tools", () => {
+      // given config without tools
+      const config = { model: "test", permission: { edit: "deny" as const } }
+
+      // when migrating
+      const result = migrateAgentConfig(config)
+
+      // then returns unchanged
+      expect(result).toEqual(config)
     })
   })
 })

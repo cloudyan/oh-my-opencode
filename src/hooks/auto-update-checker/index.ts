@@ -5,6 +5,8 @@ import { PACKAGE_NAME } from "./constants"
 import { log } from "../../shared/logger"
 import { getConfigLoadErrors, clearConfigLoadErrors } from "../../shared/config-errors"
 import { runBunInstall } from "../../cli/config-manager"
+import { isModelCacheAvailable } from "../../shared/model-availability"
+import { hasConnectedProvidersCache, updateConnectedProvidersCache } from "../../shared/connected-providers-cache"
 import type { AutoUpdateCheckerOptions } from "./types"
 
 const SISYPHUS_SPINNER = ["·", "•", "●", "○", "◌", "◦", " "]
@@ -21,6 +23,26 @@ export function isDistTag(version: string): boolean {
 export function isPrereleaseOrDistTag(pinnedVersion: string | null): boolean {
   if (!pinnedVersion) return false
   return isPrereleaseVersion(pinnedVersion) || isDistTag(pinnedVersion)
+}
+
+export function extractChannel(version: string | null): string {
+  if (!version) return "latest"
+  
+  if (isDistTag(version)) {
+    return version
+  }
+  
+  if (isPrereleaseVersion(version)) {
+    const prereleasePart = version.split("-")[1]
+    if (prereleasePart) {
+      const channelMatch = prereleasePart.match(/^(alpha|beta|rc|canary|next)/)
+      if (channelMatch) {
+        return channelMatch[1]
+      }
+    }
+  }
+  
+  return "latest"
 }
 
 export function createAutoUpdateCheckerHook(ctx: PluginInput, options: AutoUpdateCheckerOptions = {}) {
@@ -55,6 +77,8 @@ export function createAutoUpdateCheckerHook(ctx: PluginInput, options: AutoUpdat
         const displayVersion = localDevVersion ?? cachedVersion
 
         await showConfigErrorsIfAny(ctx)
+        await showModelCacheWarningIfNeeded(ctx)
+        await updateAndShowConnectedProvidersCacheStatus(ctx)
 
         if (localDevVersion) {
           if (showStartupToast) {
@@ -94,18 +118,19 @@ async function runBackgroundUpdateCheck(
     return
   }
 
-  const latestVersion = await getLatestVersion()
+  const channel = extractChannel(pluginInfo.pinnedVersion ?? currentVersion)
+  const latestVersion = await getLatestVersion(channel)
   if (!latestVersion) {
-    log("[auto-update-checker] Failed to fetch latest version")
+    log("[auto-update-checker] Failed to fetch latest version for channel:", channel)
     return
   }
 
   if (currentVersion === latestVersion) {
-    log("[auto-update-checker] Already on latest version")
+    log("[auto-update-checker] Already on latest version for channel:", channel)
     return
   }
 
-  log(`[auto-update-checker] Update available: ${currentVersion} → ${latestVersion}`)
+  log(`[auto-update-checker] Update available (${channel}): ${currentVersion} → ${latestVersion}`)
 
   if (!autoUpdate) {
     await showUpdateAvailableToast(ctx, latestVersion, getToastMessage)
@@ -113,18 +138,7 @@ async function runBackgroundUpdateCheck(
     return
   }
 
-  // Check if current version is a prerelease - don't auto-downgrade prerelease to stable
-  if (isPrereleaseVersion(currentVersion)) {
-    log(`[auto-update-checker] Skipping auto-update for prerelease version: ${currentVersion}`)
-    return
-  }
-
   if (pluginInfo.isPinned) {
-    if (isPrereleaseOrDistTag(pluginInfo.pinnedVersion)) {
-      log(`[auto-update-checker] Skipping auto-update for prerelease/dist-tag: ${pluginInfo.pinnedVersion}`)
-      return
-    }
-
     const updated = updatePinnedVersion(pluginInfo.configPath, pluginInfo.entry, latestVersion)
     if (!updated) {
       await showUpdateAvailableToast(ctx, latestVersion, getToastMessage)
@@ -154,6 +168,46 @@ async function runBunInstallSafe(): Promise<boolean> {
     const errorMessage = err instanceof Error ? err.message : String(err)
     log("[auto-update-checker] bun install error:", errorMessage)
     return false
+  }
+}
+
+async function showModelCacheWarningIfNeeded(ctx: PluginInput): Promise<void> {
+  if (isModelCacheAvailable()) return
+
+  await ctx.client.tui
+    .showToast({
+      body: {
+        title: "Model Cache Not Found",
+        message: "Run 'opencode models --refresh' or restart OpenCode to populate the models cache for optimal agent model selection.",
+        variant: "warning" as const,
+        duration: 10000,
+      },
+    })
+    .catch(() => {})
+
+  log("[auto-update-checker] Model cache warning shown")
+}
+
+async function updateAndShowConnectedProvidersCacheStatus(ctx: PluginInput): Promise<void> {
+  const hadCache = hasConnectedProvidersCache()
+
+  updateConnectedProvidersCache(ctx.client).catch(() => {})
+
+  if (!hadCache) {
+    await ctx.client.tui
+      .showToast({
+        body: {
+          title: "Connected Providers Cache",
+          message: "Building provider cache for first time. Restart OpenCode for full model filtering.",
+          variant: "info" as const,
+          duration: 8000,
+        },
+      })
+      .catch(() => {})
+
+    log("[auto-update-checker] Connected providers cache toast shown (first run)")
+  } else {
+    log("[auto-update-checker] Connected providers cache exists, updating in background")
   }
 }
 

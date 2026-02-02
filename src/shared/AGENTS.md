@@ -2,62 +2,80 @@
 
 ## OVERVIEW
 
-Cross-cutting utilities: path resolution, config management, text processing, Claude Code compatibility helpers.
+55 cross-cutting utilities. Import via barrel pattern: `import { log, deepMerge } from "../../shared"`
+
+**Categories**: Path resolution, Token truncation, Config parsing, Model resolution, System directives, Tool restrictions
 
 ## STRUCTURE
-
 ```
 shared/
-├── index.ts              # Barrel export
-├── claude-config-dir.ts  # ~/.claude resolution
-├── command-executor.ts   # Shell exec with variable expansion
-├── config-errors.ts      # Global error tracking
-├── config-path.ts        # User/project config paths
-├── data-path.ts          # XDG data directory
-├── deep-merge.ts         # Type-safe recursive merge
-├── dynamic-truncator.ts  # Token-aware truncation
-├── file-reference-resolver.ts  # @filename syntax
-├── file-utils.ts         # Symlink, markdown detection
-├── frontmatter.ts        # YAML frontmatter parsing
-├── hook-disabled.ts      # Check if hook disabled
-├── jsonc-parser.ts       # JSON with Comments
-├── logger.ts             # File-based logging
-├── migration.ts          # Legacy name compat (omo → Sisyphus)
-├── model-sanitizer.ts    # Normalize model names
-├── pattern-matcher.ts    # Tool name matching
-├── snake-case.ts         # Case conversion
-└── tool-name.ts          # PascalCase normalization
+├── tmux/                  # Tmux TUI integration (types, utils, constants)
+├── logger.ts              # File-based logging (/tmp/oh-my-opencode.log)
+├── dynamic-truncator.ts   # Token-aware context window management (194 lines)
+├── model-resolver.ts      # 3-step resolution (Override → Fallback → Default)
+├── model-requirements.ts  # Agent/category model fallback chains (162 lines)
+├── model-availability.ts  # Provider model fetching & fuzzy matching (154 lines)
+├── jsonc-parser.ts        # JSONC parsing with comment support
+├── frontmatter.ts         # YAML frontmatter extraction (JSON_SCHEMA only)
+├── data-path.ts           # XDG-compliant storage resolution
+├── opencode-config-dir.ts # ~/.config/opencode resolution (143 lines)
+├── claude-config-dir.ts   # ~/.claude resolution
+├── migration.ts           # Legacy config migration logic (231 lines)
+├── opencode-version.ts    # Semantic version comparison
+├── permission-compat.ts   # Agent tool restriction enforcement
+├── system-directive.ts    # Unified system message prefix & types
+├── session-utils.ts       # Session cursor, orchestrator detection
+├── shell-env.ts           # Cross-platform shell environment
+├── agent-variant.ts       # Agent variant from config
+├── zip-extractor.ts       # Binary/Resource ZIP extraction
+├── deep-merge.ts          # Recursive object merging (proto-pollution safe, MAX_DEPTH=50)
+├── case-insensitive.ts    # Case-insensitive object lookups
+├── session-cursor.ts      # Session message cursor tracking
+├── command-executor.ts    # Shell command execution (225 lines)
+└── index.ts               # Barrel export for all utilities
 ```
 
-## WHEN TO USE
+## MOST IMPORTED
+| Utility | Users | Purpose |
+|---------|-------|---------|
+| logger.ts | 16+ | Background task visibility |
+| system-directive.ts | 8+ | Message filtering |
+| opencode-config-dir.ts | 8+ | Path resolution |
+| permission-compat.ts | 6+ | Tool restrictions |
 
+## WHEN TO USE
 | Task | Utility |
 |------|---------|
-| Find ~/.claude | `getClaudeConfigDir()` |
-| Merge configs | `deepMerge(base, override)` |
-| Parse user files | `parseJsonc()` |
-| Check hook enabled | `isHookDisabled(name, list)` |
-| Truncate output | `dynamicTruncate(text, budget)` |
-| Resolve @file | `resolveFileReferencesInText()` |
-| Execute shell | `resolveCommandsInText()` |
-| Legacy names | `migrateLegacyAgentNames()` |
+| Path Resolution | `getOpenCodeConfigDir()`, `getDataPath()` |
+| Token Truncation | `dynamicTruncate(ctx, sessionId, output)` |
+| Config Parsing | `readJsoncFile<T>(path)`, `parseJsonc(text)` |
+| Model Resolution | `resolveModelWithFallback(client, reqs, override)` |
+| Version Gating | `isOpenCodeVersionAtLeast(version)` |
+| YAML Metadata | `parseFrontmatter(content)` |
+| Tool Security | `createAgentToolAllowlist(tools)` |
+| System Messages | `createSystemDirective(type)`, `isSystemDirective(msg)` |
+| Deep Merge | `deepMerge(target, source)` |
 
-## CRITICAL PATTERNS
+## KEY PATTERNS
 
+**3-Step Resolution** (Override → Fallback → Default):
 ```typescript
-// Dynamic truncation
-const output = dynamicTruncate(result, remainingTokens, 0.5)
+const model = resolveModelWithFallback({
+  userModel: config.agents.sisyphus.model,
+  fallbackChain: AGENT_MODEL_REQUIREMENTS.sisyphus.fallbackChain,
+  availableModels: fetchedModels,
+})
+```
 
-// Deep merge priority
-const final = deepMerge(deepMerge(defaults, userConfig), projectConfig)
-
-// Safe JSONC
-const { config, error } = parseJsoncSafe(content)
+**System Directive Filtering**:
+```typescript
+if (isSystemDirective(message)) return  // Skip system-generated
+const directive = createSystemDirective("TODO CONTINUATION")
 ```
 
 ## ANTI-PATTERNS
-
-- Hardcoding paths (use getClaudeConfigDir, getUserConfigPath)
-- JSON.parse for user files (use parseJsonc)
-- Ignoring truncation (large outputs MUST use dynamicTruncate)
-- Direct string concat for configs (use deepMerge)
+- **Raw JSON.parse**: Use `jsonc-parser.ts` for comment support
+- **Hardcoded Paths**: Use `*-config-dir.ts` or `data-path.ts`
+- **console.log**: Use `logger.ts` for background task visibility
+- **Unbounded Output**: Use `dynamic-truncator.ts` to prevent overflow
+- **Manual Version Check**: Use `opencode-version.ts` for semver safety

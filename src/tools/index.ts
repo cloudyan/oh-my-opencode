@@ -1,16 +1,14 @@
 import {
-  lsp_hover,
   lsp_goto_definition,
   lsp_find_references,
-  lsp_document_symbols,
-  lsp_workspace_symbols,
+  lsp_symbols,
   lsp_diagnostics,
-  lsp_servers,
   lsp_prepare_rename,
   lsp_rename,
-  lsp_code_actions,
-  lsp_code_action_resolve,
+  lspManager,
 } from "./lsp"
+
+export { lspManager }
 
 import {
   ast_grep_search,
@@ -32,12 +30,13 @@ export { sessionExists } from "./session-manager/storage"
 
 export { interactive_bash, startBackgroundCheck as startTmuxCheck } from "./interactive-bash"
 export { createSkillTool } from "./skill"
-export { getTmuxPath } from "./interactive-bash/utils"
 export { createSkillMcpTool } from "./skill-mcp"
 
 import {
   createBackgroundOutput,
   createBackgroundCancel,
+  type BackgroundOutputManager,
+  type BackgroundCancelClient,
 } from "./background-task"
 
 import type { PluginInput, ToolDefinition } from "@opencode-ai/plugin"
@@ -47,27 +46,24 @@ type OpencodeClient = PluginInput["client"]
 
 export { createCallOmoAgent } from "./call-omo-agent"
 export { createLookAt } from "./look-at"
-export { createSisyphusTask, type SisyphusTaskToolOptions, DEFAULT_CATEGORIES, CATEGORY_PROMPT_APPENDS } from "./sisyphus-task"
+export { createDelegateTask } from "./delegate-task"
 
 export function createBackgroundTools(manager: BackgroundManager, client: OpencodeClient): Record<string, ToolDefinition> {
+  const outputManager: BackgroundOutputManager = manager
+  const cancelClient: BackgroundCancelClient = client
   return {
-    background_output: createBackgroundOutput(manager, client),
-    background_cancel: createBackgroundCancel(manager, client),
+    background_output: createBackgroundOutput(outputManager, client),
+    background_cancel: createBackgroundCancel(manager, cancelClient),
   }
 }
 
 export const builtinTools: Record<string, ToolDefinition> = {
-  lsp_hover,
   lsp_goto_definition,
   lsp_find_references,
-  lsp_document_symbols,
-  lsp_workspace_symbols,
+  lsp_symbols,
   lsp_diagnostics,
-  lsp_servers,
   lsp_prepare_rename,
   lsp_rename,
-  lsp_code_actions,
-  lsp_code_action_resolve,
   ast_grep_search,
   ast_grep_replace,
   grep,
@@ -77,3 +73,5 @@ export const builtinTools: Record<string, ToolDefinition> = {
   session_search,
   session_info,
 }
+
+export { createTask } from "./task"

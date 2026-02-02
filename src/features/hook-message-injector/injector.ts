@@ -2,10 +2,11 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join } from "node:path"
 import { MESSAGE_STORAGE, PART_STORAGE } from "./constants"
 import type { MessageMeta, OriginalMessageContext, TextPart, ToolPermission } from "./types"
+import { log } from "../../shared/logger"
 
 export interface StoredMessage {
   agent?: string
-  model?: { providerID?: string; modelID?: string }
+  model?: { providerID?: string; modelID?: string; variant?: string }
   tools?: Record<string, ToolPermission>
 }
 
@@ -37,6 +38,35 @@ export function findNearestMessageWithFields(messageDir: string): StoredMessage 
         const msg = JSON.parse(content) as StoredMessage
         if (msg.agent || (msg.model?.providerID && msg.model?.modelID)) {
           return msg
+        }
+      } catch {
+        continue
+      }
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+/**
+ * Finds the FIRST (oldest) message in the session with agent field.
+ * This is used to get the original agent that started the session,
+ * avoiding issues where newer messages may have a different agent
+ * due to OpenCode's internal agent switching.
+ */
+export function findFirstMessageWithAgent(messageDir: string): string | null {
+  try {
+    const files = readdirSync(messageDir)
+      .filter((f) => f.endsWith(".json"))
+      .sort() // Oldest first (no reverse)
+
+    for (const file of files) {
+      try {
+        const content = readFileSync(join(messageDir, file), "utf-8")
+        const msg = JSON.parse(content) as StoredMessage
+        if (msg.agent) {
+          return msg.agent
         }
       } catch {
         continue
@@ -88,7 +118,7 @@ export function injectHookMessage(
 ): boolean {
   // Validate hook content to prevent empty message injection
   if (!hookContent || hookContent.trim().length === 0) {
-    console.warn("[hook-message-injector] Attempted to inject empty hook content, skipping injection", {
+    log("[hook-message-injector] Attempted to inject empty hook content, skipping injection", {
       sessionID,
       hasAgent: !!originalMessage.agent,
       hasModel: !!(originalMessage.model?.providerID && originalMessage.model?.modelID)
@@ -112,9 +142,17 @@ export function injectHookMessage(
   const resolvedAgent = originalMessage.agent ?? fallback?.agent ?? "general"
   const resolvedModel =
     originalMessage.model?.providerID && originalMessage.model?.modelID
-      ? { providerID: originalMessage.model.providerID, modelID: originalMessage.model.modelID }
+      ? { 
+          providerID: originalMessage.model.providerID, 
+          modelID: originalMessage.model.modelID,
+          ...(originalMessage.model.variant ? { variant: originalMessage.model.variant } : {})
+        }
       : fallback?.model?.providerID && fallback?.model?.modelID
-        ? { providerID: fallback.model.providerID, modelID: fallback.model.modelID }
+        ? { 
+            providerID: fallback.model.providerID, 
+            modelID: fallback.model.modelID,
+            ...(fallback.model.variant ? { variant: fallback.model.variant } : {})
+          }
         : undefined
   const resolvedTools = originalMessage.tools ?? fallback?.tools
 

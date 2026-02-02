@@ -1,6 +1,20 @@
 import type { AgentConfig } from "@opencode-ai/sdk"
 
-export type AgentFactory = (model?: string) => AgentConfig
+/**
+ * Agent mode determines UI model selection behavior:
+ * - "primary": Respects user's UI-selected model (sisyphus, atlas)
+ * - "subagent": Uses own fallback chain, ignores UI selection (oracle, explore, etc.)
+ * - "all": Available in both contexts (OpenCode compatibility)
+ */
+export type AgentMode = "primary" | "subagent" | "all"
+
+/**
+ * Agent factory function with static mode property.
+ * Mode is exposed as static property for pre-instantiation access.
+ */
+export type AgentFactory = ((model: string) => AgentConfig) & {
+  mode: AgentMode
+}
 
 /**
  * Agent category for grouping in Sisyphus prompt sections
@@ -57,16 +71,15 @@ export function isGptModel(model: string): boolean {
 }
 
 export type BuiltinAgentName =
-  | "Sisyphus"
+  | "sisyphus"
+  | "hephaestus"
   | "oracle"
   | "librarian"
   | "explore"
-  | "frontend-ui-ux-engineer"
-  | "document-writer"
   | "multimodal-looker"
-  | "Metis (Plan Consultant)"
-  | "Momus (Plan Reviewer)"
-  | "orchestrator-sisyphus"
+  | "metis"
+  | "momus"
+  | "atlas"
 
 export type OverridableAgentName =
   | "build"
@@ -76,6 +89,7 @@ export type AgentName = BuiltinAgentName
 
 export type AgentOverrideConfig = Partial<AgentConfig> & {
   prompt_append?: string
+  variant?: string
 }
 
 export type AgentOverrides = Partial<Record<OverridableAgentName, AgentOverrideConfig>>

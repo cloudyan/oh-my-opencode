@@ -24,10 +24,9 @@ import {
   type PreCompactContext,
 } from "./pre-compact"
 import { cacheToolInput, getToolInput } from "./tool-input-cache"
-import { recordToolUse, recordToolResult, getTranscriptPath, recordUserMessage } from "./transcript"
+import { appendTranscriptEntry, getTranscriptPath } from "./transcript"
 import type { PluginConfig } from "./types"
 import { log, isHookDisabled } from "../../shared"
-import { detectKeywordsWithType, removeCodeBlocks } from "../keyword-detector"
 import type { ContextCollector } from "../../features/context-injector"
 
 const sessionFirstMessageProcessed = new Set<string>()
@@ -93,7 +92,11 @@ export function createClaudeCodeHooksHook(
       const textParts = output.parts.filter((p) => p.type === "text" && p.text)
       const prompt = textParts.map((p) => p.text ?? "").join("\n")
 
-      recordUserMessage(input.sessionID, prompt)
+      appendTranscriptEntry(input.sessionID, {
+        type: "user",
+        timestamp: new Date().toISOString(),
+        content: prompt,
+      })
 
       const messageParts: MessagePart[] = textParts.map((p) => ({
         type: p.type as "text",
@@ -142,33 +145,11 @@ export function createClaudeCodeHooksHook(
           return
         }
 
-        const keywordMessages: string[] = []
-        if (!config.keywordDetectorDisabled) {
-          const detectedKeywords = detectKeywordsWithType(removeCodeBlocks(prompt), input.agent)
-          keywordMessages.push(...detectedKeywords.map((k) => k.message))
+        if (result.messages.length > 0) {
+          const hookContent = result.messages.join("\n\n")
+          log(`[claude-code-hooks] Injecting ${result.messages.length} hook messages`, { sessionID: input.sessionID, contentLength: hookContent.length, isFirstMessage })
 
-          if (keywordMessages.length > 0) {
-            log("[claude-code-hooks] Detected keywords", {
-              sessionID: input.sessionID,
-              keywordCount: keywordMessages.length,
-              types: detectedKeywords.map((k) => k.type),
-            })
-          }
-        }
-
-        const allMessages = [...keywordMessages, ...result.messages]
-
-        if (allMessages.length > 0) {
-          const hookContent = allMessages.join("\n\n")
-          log(`[claude-code-hooks] Injecting ${allMessages.length} messages (${keywordMessages.length} keyword + ${result.messages.length} hook)`, { sessionID: input.sessionID, contentLength: hookContent.length, isFirstMessage })
-
-          if (isFirstMessage) {
-            const idx = output.parts.findIndex((p) => p.type === "text" && p.text)
-            if (idx >= 0) {
-              output.parts[idx].text = `${hookContent}\n\n${output.parts[idx].text ?? ""}`
-              log("UserPromptSubmit hooks prepended to first message parts directly", { sessionID: input.sessionID })
-            }
-          } else if (contextCollector) {
+          if (contextCollector) {
             log("[DEBUG] Registering hook content to contextCollector", {
               sessionID: input.sessionID,
               contentLength: hookContent.length,
@@ -185,14 +166,6 @@ export function createClaudeCodeHooksHook(
               sessionID: input.sessionID,
               contentLength: hookContent.length,
             })
-          } else {
-            const idx = output.parts.findIndex((p) => p.type === "text" && p.text)
-            if (idx >= 0) {
-              output.parts[idx].text = `${hookContent}\n\n${output.parts[idx].text ?? ""}`
-              log("Hook content prepended to message (fallback)", {
-                sessionID: input.sessionID,
-              })
-            }
           }
         }
       }
@@ -202,10 +175,39 @@ export function createClaudeCodeHooksHook(
       input: { tool: string; sessionID: string; callID: string },
       output: { args: Record<string, unknown> }
     ): Promise<void> => {
+      if (input.tool === "todowrite" && typeof output.args.todos === "string") {
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(output.args.todos)
+        } catch (e) {
+          throw new Error(
+            `[todowrite ERROR] Failed to parse todos string as JSON. ` +
+            `Received: ${output.args.todos.length > 100 ? output.args.todos.slice(0, 100) + '...' : output.args.todos} ` +
+            `Expected: Valid JSON array. Pass todos as an array, not a string.`
+          )
+        }
+
+        if (!Array.isArray(parsed)) {
+          throw new Error(
+            `[todowrite ERROR] Parsed JSON is not an array. ` +
+            `Received type: ${typeof parsed}. ` +
+            `Expected: Array of todo objects. Pass todos as [{id, content, status, priority}, ...].`
+          )
+        }
+
+        output.args.todos = parsed
+        log("todowrite: parsed todos string to array", { sessionID: input.sessionID })
+      }
+
       const claudeConfig = await loadClaudeHooksConfig()
       const extendedConfig = await loadPluginExtendedConfig()
 
-      recordToolUse(input.sessionID, input.tool, output.args as Record<string, unknown>)
+      appendTranscriptEntry(input.sessionID, {
+        type: "tool_use",
+        timestamp: new Date().toISOString(),
+        tool_name: input.tool,
+        tool_input: output.args as Record<string, unknown>,
+      })
 
       cacheToolInput(input.sessionID, input.tool, input.callID, output.args as Record<string, unknown>)
 
@@ -225,7 +227,7 @@ export function createClaudeCodeHooksHook(
             .showToast({
               body: {
                 title: "PreToolUse Hook Executed",
-                message: `✗ ${result.toolName ?? input.tool} ${result.hookName ?? "hook"}: BLOCKED ${result.elapsedMs ?? 0}ms\n${result.inputLines ?? ""}`,
+                message: `[BLOCKED] ${result.toolName ?? input.tool} ${result.hookName ?? "hook"}: ${result.elapsedMs ?? 0}ms\n${result.inputLines ?? ""}`,
                 variant: "error",
                 duration: 4000,
               },
@@ -244,18 +246,29 @@ export function createClaudeCodeHooksHook(
       input: { tool: string; sessionID: string; callID: string },
       output: { title: string; output: string; metadata: unknown }
     ): Promise<void> => {
+      // Guard against undefined output (e.g., from /review command - see issue #1035)
+      if (!output) {
+        return
+      }
+
       const claudeConfig = await loadClaudeHooksConfig()
       const extendedConfig = await loadPluginExtendedConfig()
 
       const cachedInput = getToolInput(input.sessionID, input.tool, input.callID) || {}
 
       // Use metadata if available and non-empty, otherwise wrap output.output in a structured object
-      // This ensures plugin tools (call_omo_agent, sisyphus_task, task) that return strings
+      // This ensures plugin tools (call_omo_agent, delegate_task, task) that return strings
       // get their results properly recorded in transcripts instead of empty {}
       const metadata = output.metadata as Record<string, unknown> | undefined
       const hasMetadata = metadata && typeof metadata === "object" && Object.keys(metadata).length > 0
       const toolOutput = hasMetadata ? metadata : { output: output.output }
-      recordToolResult(input.sessionID, input.tool, cachedInput, toolOutput)
+      appendTranscriptEntry(input.sessionID, {
+        type: "tool_result",
+        timestamp: new Date().toISOString(),
+        tool_name: input.tool,
+        tool_input: cachedInput,
+        tool_output: toolOutput,
+      })
 
       if (!isHookDisabled(config, "PostToolUse")) {
         const postClient: PostToolUseClient = {

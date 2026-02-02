@@ -2,71 +2,77 @@
 
 ## OVERVIEW
 
-CLI for oh-my-opencode: interactive installer, health diagnostics (doctor), runtime launcher. Entry: `bunx oh-my-opencode`.
+CLI entry: `bunx oh-my-opencode`. 4 commands with Commander.js + @clack/prompts TUI.
+
+**Commands**: install (interactive setup), doctor (14 health checks), run (session launcher), get-local-version
 
 ## STRUCTURE
 
 ```
 cli/
-├── index.ts              # Commander.js entry, subcommand routing
-├── install.ts            # Interactive TUI installer (436 lines)
-├── config-manager.ts     # JSONC parsing, env detection (725 lines)
-├── types.ts              # CLI-specific types
-├── commands/             # CLI subcommands
-├── doctor/               # Health check system
-│   ├── index.ts          # Doctor command entry
-│   ├── runner.ts         # Health check orchestration
-│   ├── constants.ts      # Check categories
-│   ├── types.ts          # Check result interfaces
-│   └── checks/           # 17+ individual checks (auth, config, dependencies, gh, lsp, mcp, opencode, plugin, version)
-├── get-local-version/    # Version detection
-└── run/                  # OpenCode session launcher
-    ├── completion.ts     # Completion logic
-    └── events.ts         # Event handling
+├── index.ts              # Commander.js entry (4 commands)
+├── install.ts            # Interactive TUI (542 lines)
+├── config-manager.ts     # JSONC parsing (667 lines)
+├── types.ts              # InstallArgs, InstallConfig
+├── model-fallback.ts     # Model fallback configuration
+├── doctor/
+│   ├── index.ts          # Doctor entry
+│   ├── runner.ts         # Check orchestration
+│   ├── formatter.ts      # Colored output
+│   ├── constants.ts      # Check IDs, symbols
+│   ├── types.ts          # CheckResult, CheckDefinition (114 lines)
+│   └── checks/           # 14 checks, 23 files
+│       ├── version.ts    # OpenCode + plugin version
+│       ├── config.ts     # JSONC validity, Zod
+│       ├── auth.ts       # Anthropic, OpenAI, Google
+│       ├── dependencies.ts # AST-Grep, Comment Checker
+│       ├── lsp.ts        # LSP connectivity
+│       ├── mcp.ts        # MCP validation
+│       ├── model-resolution.ts # Model resolution check
+│       └── gh.ts         # GitHub CLI
+├── run/
+│   └── index.ts          # Session launcher
+├── mcp-oauth/
+│   └── index.ts          # MCP OAuth flow
+└── get-local-version/
+    └── index.ts          # Version detection
 ```
 
-## CLI COMMANDS
+## COMMANDS
 
 | Command | Purpose |
 |---------|---------|
-| `install` | Interactive setup wizard |
-| `doctor` | Environment health checks |
-| `run` | Launch OpenCode session |
+| `install` | Interactive setup with provider selection |
+| `doctor` | 14 health checks for diagnostics |
+| `run` | Launch session with todo enforcement |
+| `get-local-version` | Version detection and update check |
 
-## DOCTOR CHECKS
+## DOCTOR CATEGORIES (14 Checks)
 
-17+ checks in `doctor/checks/`:
-- version.ts (OpenCode >= 1.0.150)
-- config.ts (plugin registered)
-- bun.ts, node.ts, git.ts
-- anthropic-auth.ts, openai-auth.ts, google-auth.ts
-- lsp-*.ts, mcp-*.ts
-
-## CONFIG-MANAGER (669 lines)
-
-- JSONC support (comments, trailing commas)
-- Multi-source: User (~/.config/opencode/) + Project (.opencode/)
-- Zod validation
-- Legacy format migration
-- Error aggregation for doctor
+| Category | Checks |
+|----------|--------|
+| installation | opencode, plugin |
+| configuration | config validity, Zod, model-resolution |
+| authentication | anthropic, openai, google |
+| dependencies | ast-grep, comment-checker, gh-cli |
+| tools | LSP, MCP |
+| updates | version comparison |
 
 ## HOW TO ADD CHECK
 
-1. Create `src/cli/doctor/checks/my-check.ts`:
-   ```typescript
-   export const myCheck: DoctorCheck = {
-     name: "my-check",
-     category: "environment",
-     check: async () => {
-       return { status: "pass" | "warn" | "fail", message: "..." }
-     }
-   }
-   ```
-2. Add to `src/cli/doctor/checks/index.ts`
+1. Create `src/cli/doctor/checks/my-check.ts`
+2. Export `getXXXCheckDefinition()` factory returning `CheckDefinition`
+3. Add to `getAllCheckDefinitions()` in `checks/index.ts`
+
+## TUI FRAMEWORK
+
+- **@clack/prompts**: `select()`, `spinner()`, `intro()`, `outro()`
+- **picocolors**: Terminal colors for status and headers
+- **Symbols**: ✓ (pass), ✗ (fail), ⚠ (warn), ℹ (info)
 
 ## ANTI-PATTERNS
 
-- Blocking prompts in non-TTY (check `process.stdout.isTTY`)
-- Hardcoded paths (use shared utilities)
-- JSON.parse for user files (use parseJsonc)
-- Silent failures in doctor checks
+- **Blocking in non-TTY**: Always check `process.stdout.isTTY`
+- **Direct JSON.parse**: Use `parseJsonc()` from shared utils
+- **Silent failures**: Return `warn` or `fail` in doctor instead of throwing
+- **Hardcoded paths**: Use `getOpenCodeConfigPaths()` from `config-manager.ts`

@@ -12,9 +12,6 @@ const TRUNCATABLE_TOOLS = [
   "glob",
   "Glob",
   "safe_glob",
-  "lsp_find_references",
-  "lsp_document_symbols",
-  "lsp_workspace_symbols",
   "lsp_diagnostics",
   "ast_grep_search",
   "interactive_bash",
@@ -42,6 +39,7 @@ export function createToolOutputTruncatorHook(ctx: PluginInput, options?: ToolOu
     output: { title: string; output: string; metadata: unknown }
   ) => {
     if (!truncateAll && !TRUNCATABLE_TOOLS.includes(input.tool)) return
+    if (typeof output.output !== 'string') return
 
     try {
       const targetMaxTokens = TOOL_SPECIFIC_MAX_TOKENS[input.tool] ?? DEFAULT_MAX_TOKENS

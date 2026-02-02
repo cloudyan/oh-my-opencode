@@ -1,8 +1,8 @@
 import type { AgentConfig } from "@opencode-ai/sdk"
-import type { AgentPromptMetadata } from "./types"
-import { createAgentToolRestrictions } from "../shared/permission-compat"
+import type { AgentMode, AgentPromptMetadata } from "./types"
+import { createAgentToolAllowlist } from "../shared/permission-compat"
 
-const DEFAULT_MODEL = "google/gemini-3-flash"
+const MODE: AgentMode = "subagent"
 
 export const MULTIMODAL_LOOKER_PROMPT_METADATA: AgentPromptMetadata = {
   category: "utility",
@@ -11,19 +11,13 @@ export const MULTIMODAL_LOOKER_PROMPT_METADATA: AgentPromptMetadata = {
   triggers: [],
 }
 
-export function createMultimodalLookerAgent(
-  model: string = DEFAULT_MODEL
-): AgentConfig {
-  const restrictions = createAgentToolRestrictions([
-    "write",
-    "edit",
-    "bash",
-  ])
+export function createMultimodalLookerAgent(model: string): AgentConfig {
+  const restrictions = createAgentToolAllowlist(["read"])
 
   return {
     description:
-      "Analyze media files (PDFs, images, diagrams) that require interpretation beyond raw text. Extracts specific information or summaries from documents, describes visual content. Use when you need analyzed/extracted data rather than literal file contents.",
-    mode: "subagent" as const,
+      "Analyze media files (PDFs, images, diagrams) that require interpretation beyond raw text. Extracts specific information or summaries from documents, describes visual content. Use when you need analyzed/extracted data rather than literal file contents. (Multimodal-Looker - OhMyOpenCode)",
+    mode: MODE,
     model,
     temperature: 0.1,
     ...restrictions,
@@ -61,5 +55,4 @@ Response rules:
 Your output goes straight to the main agent for continued work.`,
   }
 }
-
-export const multimodalLookerAgent = createMultimodalLookerAgent()
+createMultimodalLookerAgent.mode = MODE

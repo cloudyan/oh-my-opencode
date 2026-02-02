@@ -1,6 +1,13 @@
-import { existsSync, mkdirSync, chmodSync, unlinkSync, readdirSync } from "node:fs"
+import { existsSync, readdirSync } from "node:fs"
 import { join } from "node:path"
-import { spawn } from "bun"
+import { extractZip as extractZipBase } from "../../shared"
+import {
+  cleanupArchive,
+  downloadArchive,
+  ensureCacheDir,
+  ensureExecutable,
+  extractTarGz as extractTarGzArchive,
+} from "../../shared/binary-downloader"
 
 export function findFileRecursive(dir: string, filename: string): string | null {
   try {
@@ -40,16 +47,6 @@ function getRgPath(): string {
   return join(getInstallDir(), isWindows ? "rg.exe" : "rg")
 }
 
-async function downloadFile(url: string, destPath: string): Promise<void> {
-  const response = await fetch(url)
-  if (!response.ok) {
-    throw new Error(`Failed to download: ${response.status} ${response.statusText}`)
-  }
-
-  const buffer = await response.arrayBuffer()
-  await Bun.write(destPath, buffer)
-}
-
 async function extractTarGz(archivePath: string, destDir: string): Promise<void> {
   const platformKey = getPlatformKey()
 
@@ -61,64 +58,20 @@ async function extractTarGz(archivePath: string, destDir: string): Promise<void>
     args.push("--wildcards", "*/rg")
   }
 
-  const proc = spawn(args, {
-    cwd: destDir,
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-
-  const exitCode = await proc.exited
-  if (exitCode !== 0) {
-    const stderr = await new Response(proc.stderr).text()
-    throw new Error(`Failed to extract tar.gz: ${stderr}`)
-  }
-}
-
-async function extractZipWindows(archivePath: string, destDir: string): Promise<void> {
-  const proc = spawn(
-    ["powershell", "-Command", `Expand-Archive -Path '${archivePath}' -DestinationPath '${destDir}' -Force`],
-    { stdout: "pipe", stderr: "pipe" }
-  )
-  const exitCode = await proc.exited
-  if (exitCode !== 0) {
-    throw new Error("Failed to extract zip with PowerShell")
-  }
-
-  const foundPath = findFileRecursive(destDir, "rg.exe")
-  if (foundPath) {
-    const destPath = join(destDir, "rg.exe")
-    if (foundPath !== destPath) {
-      const { renameSync } = await import("node:fs")
-      renameSync(foundPath, destPath)
-    }
-  }
-}
-
-async function extractZipUnix(archivePath: string, destDir: string): Promise<void> {
-  const proc = spawn(["unzip", "-o", archivePath, "-d", destDir], {
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  const exitCode = await proc.exited
-  if (exitCode !== 0) {
-    throw new Error("Failed to extract zip")
-  }
-
-  const foundPath = findFileRecursive(destDir, "rg")
-  if (foundPath) {
-    const destPath = join(destDir, "rg")
-    if (foundPath !== destPath) {
-      const { renameSync } = await import("node:fs")
-      renameSync(foundPath, destPath)
-    }
-  }
+  await extractTarGzArchive(archivePath, destDir, { args, cwd: destDir })
 }
 
 async function extractZip(archivePath: string, destDir: string): Promise<void> {
-  if (process.platform === "win32") {
-    await extractZipWindows(archivePath, destDir)
-  } else {
-    await extractZipUnix(archivePath, destDir)
+  await extractZipBase(archivePath, destDir)
+
+  const binaryName = process.platform === "win32" ? "rg.exe" : "rg"
+  const foundPath = findFileRecursive(destDir, binaryName)
+  if (foundPath) {
+    const destPath = join(destDir, binaryName)
+    if (foundPath !== destPath) {
+      const { renameSync } = await import("node:fs")
+      renameSync(foundPath, destPath)
+    }
   }
 }
 
@@ -137,14 +90,14 @@ export async function downloadAndInstallRipgrep(): Promise<string> {
     return rgPath
   }
 
-  mkdirSync(installDir, { recursive: true })
+  ensureCacheDir(installDir)
 
   const filename = `ripgrep-${RG_VERSION}-${config.platform}.${config.extension}`
   const url = `https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${filename}`
   const archivePath = join(installDir, filename)
 
   try {
-    await downloadFile(url, archivePath)
+    await downloadArchive(url, archivePath)
 
     if (config.extension === "tar.gz") {
       await extractTarGz(archivePath, installDir)
@@ -152,9 +105,7 @@ export async function downloadAndInstallRipgrep(): Promise<string> {
       await extractZip(archivePath, installDir)
     }
 
-    if (process.platform !== "win32") {
-      chmodSync(rgPath, 0o755)
-    }
+    ensureExecutable(rgPath)
 
     if (!existsSync(rgPath)) {
       throw new Error("ripgrep binary not found after extraction")
@@ -162,12 +113,10 @@ export async function downloadAndInstallRipgrep(): Promise<string> {
 
     return rgPath
   } finally {
-    if (existsSync(archivePath)) {
-      try {
-        unlinkSync(archivePath)
-      } catch {
-        // Cleanup failures are non-critical
-      }
+    try {
+      cleanupArchive(archivePath)
+    } catch {
+      // Cleanup failures are non-critical
     }
   }
 }

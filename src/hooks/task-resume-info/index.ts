@@ -1,4 +1,4 @@
-const TARGET_TOOLS = ["task", "Task", "call_omo_agent", "sisyphus_task"]
+const TARGET_TOOLS = ["task", "Task", "task_tool", "call_omo_agent", "delegate_task"]
 
 const SESSION_ID_PATTERNS = [
   /Session ID: (ses_[a-zA-Z0-9_-]+)/,
@@ -16,21 +16,21 @@ function extractSessionId(output: string): string | null {
 }
 
 export function createTaskResumeInfoHook() {
-  const toolExecuteAfter = async (
-    input: { tool: string; sessionID: string; callID: string },
-    output: { title: string; output: string; metadata: unknown }
-  ) => {
-    if (!TARGET_TOOLS.includes(input.tool)) return
-    if (output.output.startsWith("Error:") || output.output.startsWith("Failed")) return
-    if (output.output.includes("\nto resume:")) return
+   const toolExecuteAfter = async (
+     input: { tool: string; sessionID: string; callID: string },
+     output: { title: string; output: string; metadata: unknown }
+   ) => {
+     if (!TARGET_TOOLS.includes(input.tool)) return
+     if (output.output.startsWith("Error:") || output.output.startsWith("Failed")) return
+     if (output.output.includes("\nto continue:")) return
 
-    const sessionId = extractSessionId(output.output)
-    if (!sessionId) return
+     const sessionId = extractSessionId(output.output)
+     if (!sessionId) return
 
-    output.output = output.output.trimEnd() + `\n\nto resume: sisyphus_task(resume="${sessionId}", prompt="...")`
-  }
+     output.output = output.output.trimEnd() + `\n\nto continue: delegate_task(session_id="${sessionId}", prompt="...")`
+   }
 
-  return {
-    "tool.execute.after": toolExecuteAfter,
-  }
+   return {
+     "tool.execute.after": toolExecuteAfter,
+   }
 }
